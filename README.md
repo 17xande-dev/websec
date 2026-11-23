@@ -14,6 +14,7 @@ import "github.com/17xande-dev/websec"
 | `websec/csrf` | Request-forgery protection with bounded form parsing |
 | `websec/cookie` | Host-only session cookies |
 | `websec/session` | Server-side session lifetime and last-seen write policy |
+| `websec/session/sessiontest` | Conformance tests for an application's session store |
 
 ## SafeRedirect
 
@@ -261,11 +262,54 @@ same current time. Idle precision is `TouchEvery` (one minute): the stored
 last-seen time may lag actual activity by up to a minute, so throttling can
 make idle expiry arrive up to a minute early, never late.
 
+## Session store conformance (`websec/session/sessiontest`)
+
+In a `_test.go` file, point the suite at an isolated test database running
+your usual session store. For example, if `openTestStore` returns your
+test adapter's callbacks:
+
+```go
+import (
+	"testing"
+
+	"github.com/17xande-dev/websec/session/sessiontest"
+)
+
+func TestSessionStore(t *testing.T) {
+	s := openTestStore(t)
+	sessiontest.Run(t, sessiontest.Harness{
+		Lifetime: s.Lifetime,
+		NewUser: s.NewUser, Create: s.Create, Lookup: s.Lookup,
+		Backdate: s.Backdate, LastSeen: s.LastSeen,
+		Sweep: s.Sweep, Count: s.Count, RawRows: s.RawRows,
+		Disable: s.Disable, RevokeUser: s.RevokeUser,
+		NotApplicable: map[sessiontest.Case]string{
+			"password-change": "accounts have no local password",
+		},
+	})
+}
+```
+
+Use the real sign-in and request-time lookup paths. `Backdate` finds the
+row by the token hash and rewrites creation and last-seen times, plus any
+derived fields such as stored expiry or directory-check timestamps. For a
+SQLite hex-TEXT hash, address the row by the hex digest and write timestamps
+in the store's format. For a Postgres BYTEA hash, use the digest bytes and
+write `timestamptz` values; SQL `now()` stays unchanged. `RawRows` returns
+every stored session column, with text as-is and binary data rendered in hex.
+
+The fixtures require the store's real absolute limit to be at least ten
+minutes. If idle expiry is enabled, the idle limit must be at least five
+minutes and at least five minutes shorter than the absolute limit. With
+`IdleOff`, omit `LastSeen`; the suite reports why it skips idle and touch.
+Only `disable`, `password-change`, and `revoke-user` can be opted out, each
+with a reason visible in `go test -v`.
+
 ## Changes
 
 - **v0.2.0 (unreleased)**: Session cookie helpers, session lifetime policy,
-  and CSRF protection with bounded form parsing and opt-in oversized-upload
-  responses.
+  store conformance tests, and CSRF protection with bounded form parsing and
+  opt-in oversized-upload responses.
 - **v0.1.1**: `FuzzSafeRedirect` is now seeded with the browser-semantics rows
   as well as the general table, plus `/admin/x%2fy`, so a mutant that matches
   `Prefix` against the decoded path is caught from the seed corpus. Tests only;
