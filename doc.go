@@ -6,5 +6,6 @@
 // The documentation of each function explains why its rules exist, because a
 // rule whose reason is forgotten is the first one to be "simplified" away.
 //
-// The package uses only the standard library.
+// The root package uses only the standard library; the csrf package depends
+// on nosurf.
 package websec

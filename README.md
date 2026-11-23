@@ -1,11 +1,18 @@
 # websec
 
-Small, dependency-free web-hardening helpers for Go. The module uses only the
-standard library. Each function's documentation explains why its rules exist.
+Small web-hardening helpers for Go. The root package uses only the standard
+library; `csrf` depends on nosurf. Each function's documentation explains why
+its rules exist.
 
 ```go
 import "github.com/17xande-dev/websec"
 ```
+
+| Package | Purpose |
+| --- | --- |
+| `websec` | Same-site redirects and spreadsheet-safe CSV cells |
+| `websec/csrf` | Request-forgery protection with bounded form parsing |
+| `websec/cookie` | Host-only session cookies |
 
 ## SafeRedirect
 
@@ -147,8 +154,68 @@ sign-out.
   that should not persist past the browser session, set `BrowserSession` to omit
   both attributes. The server still enforces the session's expiry.
 
+## Request-forgery protection (`websec/csrf`)
+
+```go
+import "github.com/17xande-dev/websec/csrf"
+```
+
+Build a policy at startup with `csrf.New(csrf.Config{Origin: "https://app.example"})`
+and wrap handlers with `p.Handler`. Render `csrf.Token(r)` in the `csrf.FieldName`
+hidden field or send it in the `csrf.HeaderName` request header.
+
+Nosurf parses forms to find the token. Without a cap in front, an anonymous
+request could make the server read and spool a large body before authentication.
+The wrapper applies these rules in order:
+
+1. GET, HEAD, OPTIONS and TRACE skip the body cap. Non-exempt requests still go
+   through nosurf so a form page can issue a token.
+2. On unsafe methods, resolve the limit (`MaxBody` defaults to 256 KiB, and `Limit`
+   can override it). An oversized declared length returns 413; multipart data
+   returns 415 unless the limit allows it. Otherwise wrap the body in
+   `http.MaxBytesReader`.
+3. Exempt requests skip nosurf entirely, so they get no CSRF cookie and their
+   handlers receive an unparsed body. Exempt routes must authenticate themselves
+   and handle read errors, including `*http.MaxBytesError` on streamed bodies.
+4. Parse URL-encoded forms and allowed multipart forms under the cap. Oversized
+   reads return 413, other parse failures return 400, and multipart temporary
+   files are cleaned up after the request.
+5. Nosurf checks the origin and token before running the handler.
+
+Choose a per-route cap using the mux's actual match (or configure limits on the
+already-routed handlers), not a string prefix on the incoming path. Alternate
+spellings of a path may not match the same handler. Place any authentication
+that must precede upload parsing outside this middleware.
+
+Use the exact lowercase public origin, without a trailing slash. It is always
+trusted even when a proxy rewrites `Host`. `TrustedOrigins` adds exact origins
+(scheme, host and port); sibling subdomains are not trusted unless listed.
+The TLS answer comes from config rather than a forwarded header: a proxy can
+terminate TLS, and a client-supplied header must not change the policy.
+
+Cookies are host-only, HttpOnly, Secure by default, and last for the browser
+session. They are SameSite=Lax unless `CrossSite` is set for a credentialed
+cross-site embed; that option requires Secure. The name is prefixed with `__Host-`
+at `/` or `__Secure-` on a narrower path, reducing cookie injection. Plain-HTTP
+development explicitly sets `Insecure` and uses the bare name. Adopting the
+prefixed name makes forms opened before the change expire once.
+
+Failed CSRF checks log a warning and return a plain-text 403 with
+`Cache-Control: no-store`. For `HX-Request: true` the response also sets
+`HX-Refresh: true`. Override the response with `OnFailure` if reloading would
+discard unsaved typing. The warning is still logged, and `csrf.Reason(r)` is
+available inside the override.
+
+Call `p.Renew(w, r)` before writing headers at sign-in, sign-out and when users
+change their own password. It replaces the cookie and returns the masked token
+for the current response so a pre-sign-in or injected token doesn't survive the
+credential change. On exempt or unprotected requests it returns
+`csrf.ErrNotProtected` without setting a cookie.
+
 ## Changes
 
+- **v0.2.0 (unreleased)**: Session cookie helpers and CSRF protection with
+  bounded form parsing.
 - **v0.1.1**: `FuzzSafeRedirect` is now seeded with the browser-semantics rows
   as well as the general table, plus `/admin/x%2fy`, so a mutant that matches
   `Prefix` against the decoded path is caught from the seed corpus. Tests only;
