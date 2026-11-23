@@ -247,20 +247,28 @@ absolute limit is mandatory. Disable the idle limit explicitly with
 
 Call `Expired(created, lastSeen, now)` before considering a touch. A session
 expires at either enabled deadline, including at the exact instant it is due.
-Activity before creation counts as creation; activity after `now` counts as
-`now` for this check. If the clock moves before creation, the session does not
-expire by age. `ExpiresAt` calculates the deadline from the stored timestamps
+Activity before creation counts as creation. A session created under a clock
+that was ahead keeps its absolute limit counted from the stored creation time.
+`ExpiresAt` calculates the deadline from the stored timestamps
 without reading or adjusting for the current clock. Pass
 `AbsoluteExpiry(created)` to the cookie policy for a persistent cookie so
 activity cannot extend its lifetime.
 
 With idle expiry enabled, use `NeedsTouch(lastSeen, now)` to avoid writing on
-every request. To preserve the throttle under concurrent requests, update
-only the row matching the token hash whose stored last-seen time is at or
-before the supplied current time minus one minute, and set last-seen to that
-same current time. Idle precision is `TouchEvery` (one minute): the stored
-last-seen time may lag actual activity by up to a minute, so throttling can
-make idle expiry arrive up to a minute early, never late.
+every request, or use `NeedsTouchAfter(lastSeen, now, every)` for a custom,
+positive interval. To preserve the throttle under concurrent requests, use
+the same current time in the predicate and the update:
+
+```sql
+UPDATE ... SET last_seen = :now WHERE token_hash = :h
+  AND (last_seen <= :now - <every> OR last_seen > :now)
+```
+
+A last-seen time in the future (the clock stepped back) is rewritten to now
+at the next request, so it extends a session by at most one request. With
+the default `TouchEvery` (one minute), stored activity can lag real activity
+by up to a minute, so throttling can make idle expiry arrive up to a minute
+early.
 
 ## Session store conformance (`websec/session/sessiontest`)
 

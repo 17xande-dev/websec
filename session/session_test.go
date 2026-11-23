@@ -41,6 +41,8 @@ func TestValidate(t *testing.T) {
 }
 
 func TestExpired(t *testing.T) {
+	// Removing the now.Before(created) guard is an equivalent mutation:
+	// for a valid lifetime ExpiresAt is always later than created.
 	created := time.Unix(0, 0).UTC()
 	seen := created.Add(time.Hour)
 	idle := created.Add(3 * time.Hour)
@@ -65,6 +67,7 @@ func TestExpired(t *testing.T) {
 		{"zero last seen at idle deadline", session.Default, created, zero, created.Add(2 * time.Hour), true},
 		{"zero timestamps", session.Default, zero, zero, zero, false},
 		{"future last seen before absolute deadline", session.Default, created, absolute, idle, false},
+		{"future last seen after clock rollback", session.Default, created, created.Add(5 * time.Hour), seen, false},
 		{"future last seen cannot override absolute", session.Default, created, absolute.Add(time.Hour), absolute, true},
 		{"clock before creation", session.Default, created, seen, created.Add(-time.Nanosecond), false},
 	} {
@@ -114,9 +117,11 @@ func TestNeedsTouch(t *testing.T) {
 		want          bool
 	}{
 		{"just before", seen, seen.Add(time.Minute - time.Nanosecond), false},
+		{"59 seconds", seen, seen.Add(59 * time.Second), false},
 		{"exact", seen, seen.Add(time.Minute), true},
 		{"just after", seen, seen.Add(time.Minute + time.Nanosecond), true},
-		{"clock went backwards", seen, seen.Add(-time.Minute), false},
+		{"clock went backwards by 1ns", seen.Add(time.Nanosecond), seen, true},
+		{"clock went backwards by 4h", seen.Add(4 * time.Hour), seen, true},
 		{"zero timestamps", zero, zero, false},
 		{"zero last seen", zero, seen, true},
 	} {
@@ -125,5 +130,63 @@ func TestNeedsTouch(t *testing.T) {
 				t.Errorf("NeedsTouch() = %t, want %t", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestNeedsTouchAfter(t *testing.T) {
+	now := time.Unix(0, 0).UTC()
+	for _, tc := range []struct {
+		name string
+		age  time.Duration
+		want bool
+	}{
+		{"inside hourly interval", 59 * time.Minute, false},
+		{"at hourly interval", time.Hour, true},
+		{"future last seen", -time.Nanosecond, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := session.NeedsTouchAfter(now.Add(-tc.age), now, time.Hour); got != tc.want {
+				t.Errorf("NeedsTouchAfter(age %v, interval 1h) = %t, want %t", tc.age, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNeedsTouchUsesDefaultInterval(t *testing.T) {
+	now := time.Unix(0, 0).UTC()
+	for _, age := range []time.Duration{session.TouchEvery - time.Nanosecond, session.TouchEvery} {
+		seen := now.Add(-age)
+		if got, want := session.NeedsTouch(seen, now), session.NeedsTouchAfter(seen, now, session.TouchEvery); got != want {
+			t.Errorf("NeedsTouch(age %v) = %t, want %t from NeedsTouchAfter", age, got, want)
+		}
+	}
+}
+
+func TestNeedsTouchAfterRejectsNonpositiveInterval(t *testing.T) {
+	for _, every := range []time.Duration{0, -time.Second} {
+		t.Run(every.String(), func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("NeedsTouchAfter did not panic for interval %v", every)
+				}
+			}()
+			now := time.Unix(0, 0).UTC()
+			session.NeedsTouchAfter(now, now, every)
+		})
+	}
+}
+
+func TestFutureLastSeenRepairedOnTouch(t *testing.T) {
+	now := time.Unix(0, 0).UTC()
+	created, lastSeen := now.Add(-time.Hour), now.Add(4*time.Hour)
+	l := session.Default
+	if l.Expired(created, lastSeen, now) {
+		t.Fatal("session with future lastSeen expired before it could be touched")
+	}
+	if session.NeedsTouch(lastSeen, now) {
+		lastSeen = now
+	}
+	if !l.Expired(created, lastSeen, now.Add(2*time.Hour)) {
+		t.Error("session did not expire at the idle deadline after the touch")
 	}
 }

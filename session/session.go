@@ -37,21 +37,15 @@ func (l Lifetime) Validate() error {
 	return nil
 }
 
-// Expired reports whether now has reached either enabled deadline. A clock
-// step before creation does not expire a session by age. A future lastSeen
-// counts as now for this check, so it does not add time to the idle window.
+// Expired reports whether now has reached either enabled deadline. A session
+// created under a clock that was ahead keeps its absolute limit counted
+// from the stored creation time. A future lastSeen does not cause idle
+// expiry; the next request that touches the session should rewrite it to now.
 func (l Lifetime) Expired(created, lastSeen, now time.Time) bool {
 	if now.Before(created) {
 		return false
 	}
-	return !now.Before(l.ExpiresAt(created, clampFutureLastSeen(lastSeen, now)))
-}
-
-func clampFutureLastSeen(lastSeen, now time.Time) time.Time {
-	if lastSeen.After(now) {
-		return now
-	}
-	return lastSeen
+	return !now.Before(l.ExpiresAt(created, lastSeen))
 }
 
 // ExpiresAt returns the earlier of the absolute deadline and the enabled idle
@@ -76,8 +70,18 @@ func (l Lifetime) AbsoluteExpiry(created time.Time) time.Time {
 	return created.Add(l.Absolute)
 }
 
-// NeedsTouch reports whether at least TouchEvery has passed since lastSeen.
-// A clock step backwards does not trigger a write.
+// NeedsTouch reports whether lastSeen should be rewritten using TouchEvery.
 func NeedsTouch(lastSeen, now time.Time) bool {
-	return now.Sub(lastSeen) >= TouchEvery
+	return NeedsTouchAfter(lastSeen, now, TouchEvery)
+}
+
+// NeedsTouchAfter reports whether at least every has passed since lastSeen,
+// or lastSeen is in the future. Rewriting a future value to now at the next
+// request lets it extend the session by at most one request.
+// NeedsTouchAfter panics if every is not positive.
+func NeedsTouchAfter(lastSeen, now time.Time, every time.Duration) bool {
+	if every <= 0 {
+		panic("session: touch interval must be positive")
+	}
+	return lastSeen.After(now) || now.Sub(lastSeen) >= every
 }
