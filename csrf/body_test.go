@@ -19,10 +19,12 @@ const urlencoded = "application/x-www-form-urlencoded"
 
 type countedBody struct {
 	io.ReadCloser
-	n int64
+	n     int64
+	calls int
 }
 
 func (b *countedBody) Read(p []byte) (int, error) {
+	b.calls++
 	n, err := b.ReadCloser.Read(p)
 	b.n += int64(n)
 	return n, err

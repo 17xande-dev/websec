@@ -1,6 +1,7 @@
 package csrf
 
 import (
+	"context"
 	"errors"
 	"io"
 	"mime"
@@ -13,6 +14,19 @@ type BodyLimit struct {
 	MaxBytes  int64 // 0 means Config.MaxBody
 	Multipart bool  // accept multipart/form-data
 	MaxMemory int64 // 0 means min(MaxBytes, 1 MiB); file parts may spool above it
+
+	// PassOversized opts a permitted request into the friendly refusal for
+	// declared oversized multipart uploads. Check session and upload
+	// permission without reading the body. Requires Config.Oversized.
+	PassOversized func(*http.Request) bool
+}
+
+type oversizedKey struct{}
+
+// Oversized reports whether the body was discarded for an oversized-upload
+// refusal. It does not mean the request passed CSRF validation.
+func Oversized(r *http.Request) bool {
+	return r.Context().Value(oversizedKey{}) == true
 }
 
 func (p *Protect) limitBody(next, check http.Handler) http.Handler {
@@ -28,6 +42,22 @@ func (p *Protect) limitBody(next, check http.Handler) http.Handler {
 
 		limit := p.bodyLimit(r)
 		if r.ContentLength > limit.MaxBytes {
+			if p.oversized != nil && limit.Multipart && limit.PassOversized != nil {
+				mediaType, _ := requestMediaType(r)
+				if mediaType == "multipart/form-data" && !p.isExempt(r) && limit.PassOversized(r) {
+					if r.ProtoMajor == 1 {
+						// Don't drain the body to reuse this HTTP/1 connection.
+						w.Header().Set("Connection", "close")
+					}
+					r = r.WithContext(context.WithValue(r.Context(), oversizedKey{}, true))
+					// Let nosurf check the origin without seeing any upload data,
+					// even if an outer handler populated the parsed form fields.
+					r.Body = http.NoBody
+					r.Form, r.PostForm, r.MultipartForm = nil, nil, nil
+					check.ServeHTTP(w, r)
+					return
+				}
+			}
 			bodyError(w, http.StatusRequestEntityTooLarge)
 			return
 		}

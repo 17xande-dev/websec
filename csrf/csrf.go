@@ -41,6 +41,10 @@ type Config struct {
 	MaxBody int64                         // default cap; 0 means 256 KiB
 	Limit   func(*http.Request) BodyLimit // per-request override; nil disallows multipart
 
+	// Oversized renders a refusal for opted-in uploads that pass the origin
+	// check but have no header token. It must not perform the upload or any
+	// other state change: the form token was not checked.
+	Oversized http.Handler
 	OnFailure http.Handler // replaces the default response, not the warning; Reason is available
 	Logger    *slog.Logger // nil means slog.Default()
 }
@@ -53,6 +57,7 @@ type Protect struct {
 	exempt     func(*http.Request) bool
 	maxBody    int64
 	limit      func(*http.Request) BodyLimit
+	oversized  http.Handler
 	onFailure  http.Handler
 	logger     *slog.Logger
 }
@@ -109,6 +114,7 @@ func New(c Config) (*Protect, error) {
 		exempt:     c.Exempt,
 		maxBody:    c.MaxBody,
 		limit:      c.Limit,
+		oversized:  c.Oversized,
 		onFailure:  c.OnFailure,
 		logger:     c.Logger,
 	}, nil
@@ -117,7 +123,15 @@ func New(c Config) (*Protect, error) {
 // Handler wraps next. Several handlers wrapped by the same Protect share a
 // cookie and can use tokens issued by one another.
 func (p *Protect) Handler(next http.Handler) http.Handler {
-	check := nosurf.New(next)
+	check := nosurf.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if Oversized(r) {
+			// A valid header token can pass nosurf, but cannot lift the cap
+			// or send a request with a discarded body to the normal handler.
+			bodyError(w, http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
 	check.SetBaseCookie(p.baseCookie)
 	// The public connection may terminate TLS at a proxy. A request header
 	// must not be able to change which scheme nosurf treats as same-origin.
@@ -159,6 +173,10 @@ func Reason(r *http.Request) error {
 
 func (p *Protect) fail(w http.ResponseWriter, r *http.Request) {
 	reason := Reason(r)
+	if p.oversized != nil && Oversized(r) && reason == nosurf.ErrBadToken && len(r.Header.Values(HeaderName)) == 0 {
+		p.oversized.ServeHTTP(w, r)
+		return
+	}
 	// A parse error from nosurf can echo the raw Origin header. Only log
 	// known constant reasons, not header text controlled by the request.
 	switch reason {

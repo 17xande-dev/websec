@@ -171,9 +171,9 @@ The wrapper applies these rules in order:
 1. GET, HEAD, OPTIONS and TRACE skip the body cap. Non-exempt requests still go
    through nosurf so a form page can issue a token.
 2. On unsafe methods, resolve the limit (`MaxBody` defaults to 256 KiB, and `Limit`
-   can override it). An oversized declared length returns 413; multipart data
-   returns 415 unless the limit allows it. Otherwise wrap the body in
-   `http.MaxBytesReader`.
+   can override it). An oversized declared length returns 413 unless the
+   upload opts into a custom refusal (see below). Multipart data returns 415
+   unless the limit allows it. Otherwise wrap the body in `http.MaxBytesReader`.
 3. Exempt requests skip nosurf entirely, so they get no CSRF cookie and their
    handlers receive an unparsed body. Exempt routes must authenticate themselves
    and handle read errors, including `*http.MaxBytesError` on streamed bodies.
@@ -212,10 +212,30 @@ for the current response so a pre-sign-in or injected token doesn't survive the
 credential change. On exempt or unprotected requests it returns
 `csrf.ErrNotProtected` without setting a cookie.
 
+### Custom refusal for oversized uploads
+
+To show a friendly error on an upload route, have `Limit` return a `BodyLimit`
+with `Multipart: true` and a `PassOversized` callback. The callback must check
+the session and upload permission without reading the body. Set
+`Config.Oversized` to a handler that only renders the refusal (for example,
+a 422 page with the size limit). `csrf.Oversized(r)` identifies the marked
+request and does not attest that its CSRF token was checked.
+
+For a permitted multipart request whose declared size exceeds the cap, the kit
+substitutes `http.NoBody` without reading or spooling the upload, closes the
+HTTP/1 connection after the response, and lets nosurf check the origin. The
+custom handler runs only if the origin check passed and the missing form token
+is the only CSRF failure, with no `X-CSRF-Token` header present. It must not
+upload anything or change state. Untrusted origins and requests with a CSRF
+header are refused. Anonymous or unpermitted callers, exempt routes, and
+routes without the opt-in keep the plain 413. Streamed uploads that exceed
+the cap still get 413 after a bounded read; uploads at or below the cap still
+need a valid token.
+
 ## Changes
 
 - **v0.2.0 (unreleased)**: Session cookie helpers and CSRF protection with
-  bounded form parsing.
+  bounded form parsing and opt-in oversized-upload responses.
 - **v0.1.1**: `FuzzSafeRedirect` is now seeded with the browser-semantics rows
   as well as the general table, plus `/admin/x%2fy`, so a mutant that matches
   `Prefix` against the decoded path is caught from the seed corpus. Tests only;
