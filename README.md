@@ -13,6 +13,7 @@ import "github.com/17xande-dev/websec"
 | `websec` | Same-site redirects and spreadsheet-safe CSV cells |
 | `websec/csrf` | Request-forgery protection with bounded form parsing |
 | `websec/cookie` | Host-only session cookies |
+| `websec/session` | Server-side session lifetime and last-seen write policy |
 
 ## SafeRedirect
 
@@ -232,10 +233,39 @@ routes without the opt-in keep the plain 413. Streamed uploads that exceed
 the cap still get 413 after a bounded read; uploads at or below the cap still
 need a valid token.
 
+## Session lifetimes (`websec/session`)
+
+```go
+import "github.com/17xande-dev/websec/session"
+```
+
+Start with a copy of `session.Default` (two hours idle, twelve hours absolute)
+or configure a `session.Lifetime`, and call `Validate` at startup. The
+absolute limit is mandatory. Disable the idle limit explicitly with
+`IdleOff: true` and `Idle: 0`.
+
+Call `Expired(created, lastSeen, now)` before considering a touch. A session
+expires at either enabled deadline, including at the exact instant it is due.
+Activity before creation counts as creation; activity after `now` counts as
+`now` for this check. If the clock moves before creation, the session does not
+expire by age. `ExpiresAt` calculates the deadline from the stored timestamps
+without reading or adjusting for the current clock. Pass
+`AbsoluteExpiry(created)` to the cookie policy for a persistent cookie so
+activity cannot extend its lifetime.
+
+With idle expiry enabled, use `NeedsTouch(lastSeen, now)` to avoid writing on
+every request. To preserve the throttle under concurrent requests, update
+only the row matching the token hash whose stored last-seen time is at or
+before the supplied current time minus one minute, and set last-seen to that
+same current time. Idle precision is `TouchEvery` (one minute): the stored
+last-seen time may lag actual activity by up to a minute, so throttling can
+make idle expiry arrive up to a minute early, never late.
+
 ## Changes
 
-- **v0.2.0 (unreleased)**: Session cookie helpers and CSRF protection with
-  bounded form parsing and opt-in oversized-upload responses.
+- **v0.2.0 (unreleased)**: Session cookie helpers, session lifetime policy,
+  and CSRF protection with bounded form parsing and opt-in oversized-upload
+  responses.
 - **v0.1.1**: `FuzzSafeRedirect` is now seeded with the browser-semantics rows
   as well as the general table, plus `/admin/x%2fy`, so a mutant that matches
   `Prefix` against the decoded path is caught from the seed corpus. Tests only;
