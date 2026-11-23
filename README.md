@@ -120,6 +120,33 @@ w.Write(websec.CSVRow(record...)) // a new slice; record is not modified
 - Use it only for files meant to be opened in a spreadsheet. Do not use it on
   files another program imports, where the apostrophe would corrupt the data.
 
+## Session cookies (`websec/cookie`)
+
+```go
+import "github.com/17xande-dev/websec/cookie"
+```
+
+Build the policy once at startup with `cookie.New(cookie.Config{Name: "session"})`.
+Pass a bare name and a path (`""` means `/`). `New` rejects invalid names and
+paths. Use `Set` after sign-in, `Value` to read the credential, and `Clear` at
+sign-out.
+
+- Secure cookies at `/` get `__Host-`, which prevents a sibling subdomain
+  (including one hosted by a third party) from setting a domain cookie with
+  the same name. Secure cookies at a narrower path, such as `/admin`, get
+  `__Secure-`: it requires HTTPS but does not prevent another HTTPS subdomain
+  from setting a domain cookie. Neither sets `Domain`. `Insecure` is for
+  plain-HTTP development only and disables both `Secure` and the prefix.
+- Adopting a prefixed name renames a previously bare cookie and signs everyone
+  out once. `Value` does not fall back to the old name.
+- `HttpOnly` keeps scripts from reading the credential. `SameSite=Lax` keeps it
+  off cross-site POSTs without breaking navigation from ordinary links.
+  Neither setting varies by route, even for an admin-path cookie.
+- Pass the server's absolute session expiry to `Set`. It writes both `Expires`
+  and `Max-Age`, rounding down to whole seconds. For directory-backed sign-in
+  that should not persist past the browser session, set `BrowserSession` to omit
+  both attributes. The server still enforces the session's expiry.
+
 ## Changes
 
 - **v0.1.1**: `FuzzSafeRedirect` is now seeded with the browser-semantics rows
