@@ -39,13 +39,17 @@ func browserResolve(next string) (u *url.URL, ok bool) {
 // browser reads it, stays on the same host, under the required prefix and
 // outside every denied prefix.
 func FuzzSafeRedirect(f *testing.F) {
-	for _, r := range redirectTable() {
+	seeds := append(redirectTable(), browserSemanticsRows()...)
+	for _, r := range seeds {
 		for i := range fuzzOptions {
 			f.Add(r.in, uint8(i))
 		}
 	}
 	f.Add("/a/b/", uint8(0))
 	f.Add("/admin/x", uint8(1))
+	// A browser compares the raw path, so the encoded slash keeps this out of
+	// the prefix; only a mutant matching the decoded path accepts it wrongly.
+	f.Add("/admin/x%2fy", uint8(1))
 	// Found by fuzzing: the browser trims the trailing space, exposing "..".
 	f.Add("/admin/%2e%2e ", uint8(1))
 	f.Fuzz(func(t *testing.T, next string, opt uint8) {

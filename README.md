@@ -120,6 +120,14 @@ w.Write(websec.CSVRow(record...)) // a new slice; record is not modified
 - Use it only for files meant to be opened in a spreadsheet. Do not use it on
   files another program imports, where the apostrophe would corrupt the data.
 
+## Changes
+
+- **v0.1.1**: `FuzzSafeRedirect` is now seeded with the browser-semantics rows
+  as well as the general table, plus `/admin/x%2fy`, so a mutant that matches
+  `Prefix` against the decoded path is caught from the seed corpus. Tests only;
+  no behaviour change.
+- **v0.1.0**: `SafeRedirect`, `CSVCell` and `CSVRow`.
+
 ## Development
 
 ```sh

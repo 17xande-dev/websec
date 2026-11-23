@@ -113,7 +113,7 @@ func TestSafeRedirectTable(t *testing.T) {
 }
 
 // Each row names a way a browser reads a URL differently from a byte-wise check.
-func TestSafeRedirectBrowserSemantics(t *testing.T) {
+func browserSemanticsRows() []redirectRow {
 	var all []redirectRow
 	all = append(all, rows(noOptions, false,
 		"/\t/evil.example", // browser strips the tab: "//evil.example"
@@ -149,7 +149,11 @@ func TestSafeRedirectBrowserSemantics(t *testing.T) {
 	)...)
 	// A prefix that does not start with "/" matches no path: it fails closed.
 	all = append(all, rows(RedirectOptions{Prefix: "admin/"}, false, "/admin/", "/admin/x", "admin/x", "/")...)
-	checkRows(t, all)
+	return all
+}
+
+func TestSafeRedirectBrowserSemantics(t *testing.T) {
+	checkRows(t, browserSemanticsRows())
 }
 
 func TestSafeRedirectLengthCap(t *testing.T) {
