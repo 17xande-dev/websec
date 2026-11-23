@@ -291,8 +291,9 @@ func TestSessionStore(t *testing.T) {
 		Backdate: s.Backdate, LastSeen: s.LastSeen,
 		Sweep: s.Sweep, Count: s.Count, RawRows: s.RawRows,
 		Disable: s.Disable, RevokeUser: s.RevokeUser,
-		NotApplicable: map[sessiontest.Case]string{
-			"password-change": "accounts have no local password",
+		ChangePassword: func(t *testing.T, user, current string) string {
+			s.ChangePassword(t, user, current) // this store keeps the current session
+			return current
 		},
 	})
 }
@@ -305,13 +306,21 @@ SQLite hex-TEXT hash, address the row by the hex digest and write timestamps
 in the store's format. For a Postgres BYTEA hash, use the digest bytes and
 write `timestamptz` values; SQL `now()` stays unchanged. `RawRows` returns
 every stored session column, with text as-is and binary data rendered in hex.
+The result must grow when a session is added.
 
 The fixtures require the store's real absolute limit to be at least ten
 minutes. If idle expiry is enabled, the idle limit must be at least five
-minutes and at least five minutes shorter than the absolute limit. With
-`IdleOff`, omit `LastSeen`; the suite reports why it skips idle and touch.
-Only `disable`, `password-change`, and `revoke-user` can be opted out, each
-with a reason visible in `go test -v`.
+minutes, at least four times the touch interval, and at least five minutes
+shorter than the absolute limit. Set `Harness.TouchEvery` to the store's
+interval if it is longer than the default minute. With `IdleOff`, leave
+`TouchEvery` unset and omit `LastSeen`; the suite reports why it skips idle
+and touch.
+
+`ChangePassword` returns the token still valid for the current browser:
+the current token, a rotated token, or `""` if all the user's sessions
+ended. Only `disable`, `password-change`, and `revoke-user` can be opted
+out. Leave the callback nil and give a reason in `NotApplicable`; the
+reason is visible in `go test -v`.
 
 ## Changes
 

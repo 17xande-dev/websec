@@ -30,12 +30,16 @@ type Harness struct {
 	Count    func(t *testing.T) int
 	RawRows  func(t *testing.T) []string // every session column, with binary values rendered as hex
 
-	Disable        func(t *testing.T, user string)
-	ChangePassword func(t *testing.T, user, keepToken string) // the user's own password change
-	RevokeUser     func(t *testing.T, user string)            // administrative or directory revocation
+	Disable func(t *testing.T, user string)
+	// ChangePassword runs the user's own password change from current and
+	// returns current if kept, a new token if rotated, or "" if all of the
+	// user's sessions ended.
+	ChangePassword func(t *testing.T, user, current string) (still string)
+	TouchEvery     time.Duration                   // the store's touch interval; zero means session.TouchEvery
+	RevokeUser     func(t *testing.T, user string) // administrative or directory revocation
 
 	// NotApplicable may skip disable, password-change, or revoke-user with
-	// a non-blank reason. Each of those callbacks is required unless skipped.
+	// a non-blank reason, and only when the corresponding callback is nil.
 	NotApplicable map[Case]string
 }
 
@@ -57,8 +61,20 @@ func Run(t *testing.T, h Harness) {
 	if l.Absolute < 10*m {
 		t.Fatal("sessiontest: Absolute must be at least 10m for the suite's fixtures")
 	}
-	if !l.IdleOff && (l.Idle < 5*m || l.Absolute-l.Idle < 5*m) {
-		t.Fatal("sessiontest: Idle must be at least 5m and at least 5m shorter than Absolute; an idle limit that can never end a session before Absolute should be IdleOff")
+	tau := h.TouchEvery
+	switch {
+	case tau < 0:
+		t.Fatal("sessiontest: TouchEvery must not be negative")
+	case tau == 0:
+		tau = session.TouchEvery
+	case tau < session.TouchEvery:
+		t.Fatal("sessiontest: TouchEvery may only be coarser than session.TouchEvery")
+	case l.IdleOff:
+		t.Fatal("sessiontest: TouchEvery has no effect with IdleOff")
+	}
+	// Divide instead of multiplying so large durations cannot overflow.
+	if !l.IdleOff && (l.Idle < 5*m || l.Idle/4 < tau || l.Absolute-l.Idle < 5*m) {
+		t.Fatal("sessiontest: Idle must be at least 5m and 4*TouchEvery, and at least 5m shorter than Absolute; an idle limit that can never end a session before Absolute should be IdleOff")
 	}
 	if !l.IdleOff && h.LastSeen == nil {
 		t.Fatal("sessiontest: LastSeen is required when idle is on")
@@ -79,12 +95,9 @@ func Run(t *testing.T, h Harness) {
 			t.Fatalf("sessiontest: %s is required", f.name)
 		}
 	}
-	for c, reason := range h.NotApplicable {
+	for c := range h.NotApplicable {
 		switch c {
 		case "disable", "password-change", "revoke-user":
-			if strings.TrimSpace(reason) == "" {
-				t.Fatalf("sessiontest: NotApplicable[%q] requires a reason", c)
-			}
 		default:
 			t.Fatalf("sessiontest: %q cannot be listed in NotApplicable", c)
 		}
@@ -98,13 +111,21 @@ func Run(t *testing.T, h Harness) {
 		{"password-change", "ChangePassword", h.ChangePassword == nil},
 		{"revoke-user", "RevokeUser", h.RevokeUser == nil},
 	} {
-		if f.missing && h.NotApplicable[f.c] == "" {
+		reason, optedOut := h.NotApplicable[f.c]
+		if optedOut && !f.missing {
+			t.Fatalf("sessiontest: NotApplicable[%s] set but its callback is provided; remove one", f.c)
+		}
+		if optedOut && strings.TrimSpace(reason) == "" {
+			t.Fatalf("sessiontest: NotApplicable[%q] requires a reason", f.c)
+		}
+		if f.missing && !optedOut {
 			t.Fatalf("sessiontest: %s is required unless NotApplicable[%q] gives a reason", f.name, f.c)
 		}
 	}
 	if l.IdleOff {
 		t.Log("idle off: idle and touch cases not applicable")
 	}
+	h.TouchEvery = tau
 
 	for _, tc := range []struct {
 		name Case
@@ -122,15 +143,20 @@ func Run(t *testing.T, h Harness) {
 		{"raw-token", Harness.rawToken},
 		{"distinct-tokens", Harness.distinctTokens},
 	} {
-		t.Run(string(tc.name), func(t *testing.T) {
+		t.Run(string(tc.name), func(sub *testing.T) {
 			now := time.Now()
 			if l.IdleOff && (tc.name == "idle" || tc.name == "touch") {
-				t.Skip("idle off")
+				sub.Skip("idle off")
 			}
 			if reason, ok := h.NotApplicable[tc.name]; ok {
-				t.Skipf("not applicable: %s", reason)
+				sub.Skipf("not applicable: %s", reason)
 			}
-			tc.run(h, t, now)
+			sub.Cleanup(func() {
+				if sub.Skipped() {
+					t.Errorf("sessiontest: case %s was skipped; use NotApplicable", tc.name)
+				}
+			})
+			tc.run(h, sub, now)
 		})
 	}
 }
@@ -198,8 +224,9 @@ func (h Harness) idle(t *testing.T, now time.Time) {
 func (h Harness) touch(t *testing.T, now time.Time) {
 	u := h.NewUser(t)
 	token := h.Create(t, u)
-	created := now.Add(-3 * m)
-	h.Backdate(t, token, created, now.Add(-2*m))
+	tau := h.TouchEvery
+	created := now.Add(-3 * tau)
+	h.Backdate(t, token, created, now.Add(-2*tau))
 	h.hit(t, "activity due for a touch", token, u)
 	if got := h.LastSeen(t, token); got.Before(now.Add(-m)) || got.After(now.Add(m)) {
 		t.Errorf("Lookup did not move LastSeen to within one minute of now (offset %v)", got.Sub(now))
@@ -207,11 +234,20 @@ func (h Harness) touch(t *testing.T, now time.Time) {
 
 	// Seed a distinct timestamp so an unwanted write is visible even with
 	// one-second storage precision.
-	want := now.Add(-30 * time.Second)
+	want := now.Add(-tau / 2)
 	h.Backdate(t, token, created, want)
 	h.hit(t, "activity inside the touch interval", token, u)
 	if delta := h.LastSeen(t, token).Sub(want); delta <= -time.Second || delta >= time.Second {
 		t.Errorf("Lookup changed LastSeen inside TouchEvery (offset %v from backdated time)", delta)
+	}
+
+	h.Backdate(t, token, created, now.Add(tau))
+	// At the default interval the seed is itself within the allowed skew
+	// window. Read it back at store precision to also require an actual write.
+	future := h.LastSeen(t, token)
+	h.hit(t, "activity recorded in the future", token, u)
+	if got := h.LastSeen(t, token); got.Equal(future) || got.Before(now.Add(-m)) || got.After(now.Add(m)) {
+		t.Errorf("Lookup did not rewrite future LastSeen to within one minute of now (offset %v)", got.Sub(now))
 	}
 }
 
@@ -303,10 +339,21 @@ func (h Harness) disable(t *testing.T, _ time.Time) {
 
 func (h Harness) passwordChange(t *testing.T, _ time.Time) {
 	u, a, b, v, c := h.twoUsers(t)
-	h.ChangePassword(t, u, a)
-	h.hit(t, "kept session", a, u)
+	still := h.ChangePassword(t, u, a)
 	h.miss(t, "other session of the user changing password", b)
 	h.hit(t, "other user's session", c, v)
+	switch still {
+	case "":
+		h.miss(t, "current session after ending all sessions", a)
+	case a:
+		h.hit(t, "kept session", a, u)
+	default:
+		h.hit(t, "rotated session", still, u)
+		h.miss(t, "old current session after rotation", a)
+		if still == b {
+			t.Error("password change returned the user's other session as the rotated session")
+		}
+	}
 }
 
 func (h Harness) revokeUser(t *testing.T, _ time.Time) {
@@ -339,7 +386,27 @@ func (h Harness) sweep(t *testing.T, now time.Time) {
 }
 
 func (h Harness) rawToken(t *testing.T, _ time.Time) {
-	token := h.Create(t, h.NewUser(t))
+	u := h.NewUser(t)
+	first := h.Create(t, u)
+	rows := h.RawRows(t)
+	n := len(rows)
+	const missingRows = "sessiontest: RawRows returned nothing for stored sessions"
+	if n == 0 {
+		t.Fatal(missingRows)
+	}
+	checkRawToken(t, rows, first)
+
+	second := h.Create(t, u)
+	rows = h.RawRows(t)
+	if len(rows) <= n {
+		t.Fatal(missingRows)
+	}
+	checkRawToken(t, rows, first)
+	checkRawToken(t, rows, second)
+}
+
+func checkRawToken(t *testing.T, rows []string, token string) {
+	t.Helper()
 	spellings := []string{token}
 	for _, b := range decodings(token) {
 		lower := hex.EncodeToString(b)
@@ -348,7 +415,7 @@ func (h Harness) rawToken(t *testing.T, _ time.Time) {
 			spellings = append(spellings, enc.EncodeToString(b))
 		}
 	}
-	for _, row := range h.RawRows(t) {
+	for _, row := range rows {
 		for _, s := range spellings {
 			if s != "" && strings.Contains(row, s) {
 				t.Fatal("stored session columns contain the raw token or an encoding of it")

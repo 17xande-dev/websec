@@ -27,6 +27,7 @@ type row struct {
 
 type reference struct {
 	lifetime session.Lifetime
+	every    time.Duration
 	mutation string
 	format   string
 	users    map[string]bool // true if disabled
@@ -118,8 +119,13 @@ func (s *reference) lookup(_ *testing.T, token string) (string, bool, error) {
 	if !ok || (s.users[r.user] && s.mutation != "disabled-accepted") || s.expired(r, now, false) {
 		return "", false, nil
 	}
+	every := s.every
+	if every == 0 {
+		every = session.TouchEvery
+	}
 	if !s.lifetime.IdleOff && s.mutation != "never-touch" &&
-		(s.mutation == "always-touch" || session.NeedsTouch(r.lastSeen, now)) {
+		(s.mutation != "ignore-future-touch" || !r.lastSeen.After(now)) &&
+		(s.mutation == "always-touch" || session.NeedsTouchAfter(r.lastSeen, now, every)) {
 		r.lastSeen = now
 	}
 	return r.user, true, nil
@@ -147,18 +153,7 @@ func (s *reference) harness() sessiontest.Harness {
 			s.users[user] = false
 			return user
 		},
-		Create: func(t *testing.T, user string) string {
-			b := make([]byte, s.tokenBytes())
-			rand.Read(b)
-			token := s.encode(b)
-			now := time.Now().Truncate(time.Second)
-			r := &row{user: user, created: now, lastSeen: now}
-			if s.mutation == "raw-token" {
-				r.raw = token
-			}
-			s.rows[sha256.Sum256(b)] = r
-			return token
-		},
+		Create: s.create,
 		Lookup: s.lookup,
 		Backdate: func(t *testing.T, token string, created, lastSeen time.Time) {
 			k, _ := s.key(token)
@@ -190,14 +185,7 @@ func (s *reference) harness() sessiontest.Harness {
 			}
 			s.users[user] = true
 		},
-		ChangePassword: func(t *testing.T, user, keepToken string) {
-			keep, _ := s.key(keepToken)
-			for k, r := range s.rows {
-				if r.user == user && (k != keep || s.mutation == "password-ends-all") && s.mutation != "password-keeps-all" {
-					delete(s.rows, k)
-				}
-			}
-		},
+		ChangePassword: s.changePassword,
 		RevokeUser: func(t *testing.T, user string) {
 			spare := s.mutation == "revoke-spares-one"
 			for k, r := range s.rows {
@@ -210,6 +198,44 @@ func (s *reference) harness() sessiontest.Harness {
 				}
 			}
 		},
+	}
+}
+
+func (s *reference) create(_ *testing.T, user string) string {
+	b := make([]byte, s.tokenBytes())
+	rand.Read(b)
+	token := s.encode(b)
+	now := time.Now().Truncate(time.Second)
+	r := &row{user: user, created: now, lastSeen: now}
+	if s.mutation == "raw-token" {
+		r.raw = token
+	}
+	s.rows[sha256.Sum256(b)] = r
+	return token
+}
+
+func (s *reference) changePassword(t *testing.T, user, current string) string {
+	key, _ := s.key(current)
+	removeCurrent := false
+	switch s.mutation {
+	case "password-end-all", "password-ends-all", "password-rotate":
+		removeCurrent = true
+	}
+	for k, r := range s.rows {
+		if s.mutation == "password-ends-other-user" && r.user != user {
+			delete(s.rows, k)
+		}
+		if r.user == user && (k != key || removeCurrent) && s.mutation != "password-keeps-all" {
+			delete(s.rows, k)
+		}
+	}
+	switch s.mutation {
+	case "password-end-all", "password-reports-ended":
+		return ""
+	case "password-rotate", "password-rotate-keeps-old":
+		return s.create(t, user)
+	default:
+		return current
 	}
 }
 
@@ -230,6 +256,27 @@ func TestReference(t *testing.T) {
 			sessiontest.Run(t, newReference(session.Default, "", format))
 		})
 	}
+	for _, mode := range []string{"keep", "password-rotate", "password-end-all"} {
+		t.Run(mode, func(t *testing.T) {
+			sessiontest.Run(t, newReference(session.Default, mode, "base64url"))
+		})
+	}
+	t.Run("hourly-touch", func(t *testing.T) {
+		h := hourlyReference(time.Hour)
+		sessiontest.Run(t, h)
+	})
+}
+
+func hourlyReference(actual time.Duration) sessiontest.Harness {
+	s := reference{
+		lifetime: session.Lifetime{Idle: 4 * time.Hour, Absolute: session.Default.Absolute},
+		every:    actual,
+		users:    make(map[string]bool),
+		rows:     make(map[[sha256.Size]byte]*row),
+	}
+	h := s.harness()
+	h.TouchEvery = time.Hour
+	return h
 }
 
 const childMode = "WEBSEC_SESSIONTEST_CHILD"
@@ -243,7 +290,7 @@ func TestConformanceChild(t *testing.T) {
 	}
 	h := newReference(session.Default, mode, "base64url")
 	switch mode {
-	case "idle-off", "sweep-nothing-idle-off", "short-absolute":
+	case "idle-off", "sweep-nothing-idle-off", "short-absolute", "touch-with-idle-off":
 		l := session.Lifetime{Absolute: session.Default.Absolute, IdleOff: true}
 		if mode == "short-absolute" {
 			l.Absolute = 2 * time.Minute
@@ -251,6 +298,9 @@ func TestConformanceChild(t *testing.T) {
 		mutation := strings.TrimSuffix(mode, "-idle-off")
 		h = newReference(l, mutation, "base64url")
 		h.LastSeen = nil
+		if mode == "touch-with-idle-off" {
+			h.TouchEvery = time.Minute
+		}
 	case "equal-limits":
 		h.Lifetime.Idle = h.Lifetime.Absolute
 	case "short-idle":
@@ -269,9 +319,28 @@ func TestConformanceChild(t *testing.T) {
 			"disable": "no disabled accounts", "password-change": "no local password", "revoke-user": "no administrative revoke",
 		}
 	case "blank-reason":
+		h.Disable = nil
 		h.NotApplicable = map[sessiontest.Case]string{"disable": " \t"}
 	case "idle-opt-out":
 		h.NotApplicable = map[sessiontest.Case]string{"idle": "not tested"}
+	case "opt-out-with-disable":
+		h.NotApplicable = map[sessiontest.Case]string{"disable": "no disabled accounts"}
+	case "callback-skip":
+		h.Disable = func(t *testing.T, _ string) { t.Skip("callback skipped") }
+	case "raw-rows-empty":
+		h.RawRows = func(*testing.T) []string { return nil }
+	case "raw-rows-static":
+		h.RawRows = func(*testing.T) []string { return []string{"not a session row"} }
+	case "touch-negative":
+		h.TouchEvery = -time.Second
+	case "touch-too-fine":
+		h.TouchEvery = 30 * time.Second
+	case "touch-too-coarse":
+		h.TouchEvery = time.Hour
+	case "touch-huge":
+		h.TouchEvery = time.Duration(1<<63 - 1)
+	case "touch-declared-hourly":
+		h = hourlyReference(time.Minute)
 	case "short-hex-token":
 		h = newReference(session.Default, mode, "hex")
 	}
@@ -308,6 +377,8 @@ func TestMutations(t *testing.T) {
 		{"idle-from-created", []string{"absolute", "idle"}, "before idle deadline"},
 		{"always-touch", []string{"touch"}, "Lookup changed LastSeen inside TouchEvery"},
 		{"never-touch", []string{"touch"}, "Lookup did not move LastSeen"},
+		{"ignore-future-touch", []string{"touch"}, "Lookup did not rewrite future LastSeen"},
+		{"touch-declared-hourly", []string{"touch"}, "Lookup changed LastSeen inside TouchEvery"},
 		{"malformed-error", []string{"miss"}, "short token: Lookup hit = false, error = true"},
 		{"malformed-panic", []string{"miss"}, "short token: Lookup panicked"},
 		{"decode-alternates", []string{"miss"}, "alternate token encoding: Lookup hit = true"},
@@ -315,12 +386,17 @@ func TestMutations(t *testing.T) {
 		{"disabled-accepted", []string{"disable"}, "disabled user's second session: Lookup hit = true"},
 		{"password-ends-all", []string{"password-change"}, "kept session: Lookup hit = false"},
 		{"password-keeps-all", []string{"password-change"}, "other session of the user changing password: Lookup hit = true"},
+		{"password-reports-ended", []string{"password-change"}, "current session after ending all sessions: Lookup hit = true"},
+		{"password-rotate-keeps-old", []string{"password-change"}, "old current session after rotation: Lookup hit = true"},
+		{"password-ends-other-user", []string{"password-change"}, "other user's session: Lookup hit = false"},
 		{"revoke-spares-one", []string{"revoke-user"}, "session: Lookup hit = true"},
 		{"sweep-live", []string{"sweep"}, "live session after sweep: Lookup hit = false"},
 		{"sweep-ignores-idle", []string{"sweep"}, "Sweep removed 1 rows, want 2"},
 		{"sweep-nothing", []string{"sweep"}, "Sweep removed 0 rows, want 2"},
 		{"sweep-nothing-idle-off", []string{"sweep"}, "Sweep removed 0 rows, want 1"},
 		{"raw-token", []string{"raw-token"}, "stored session columns contain the raw token"},
+		{"raw-rows-empty", []string{"raw-token"}, "sessiontest: RawRows returned nothing for stored sessions"},
+		{"raw-rows-static", []string{"raw-token"}, "sessiontest: RawRows returned nothing for stored sessions"},
 		{"short-token", []string{"distinct-tokens"}, "decodes to 16 bytes"},
 		{"short-hex-token", []string{"distinct-tokens"}, "decodes to 31 bytes"},
 	} {
@@ -341,16 +417,23 @@ func TestMutations(t *testing.T) {
 }
 
 func TestBadConfigurations(t *testing.T) {
+	const idleMessage = "Idle must be at least 5m and 4*TouchEvery, and at least 5m shorter than Absolute; an idle limit that can never end a session before Absolute should be IdleOff"
 	for _, tc := range []struct{ mode, message string }{
-		{"equal-limits", "Idle must be at least 5m and at least 5m shorter than Absolute; an idle limit that can never end a session before Absolute should be IdleOff"},
+		{"equal-limits", idleMessage},
 		{"short-absolute", "Absolute must be at least 10m for the suite's fixtures"},
-		{"short-idle", "Idle must be at least 5m and at least 5m shorter than Absolute; an idle limit that can never end a session before Absolute should be IdleOff"},
+		{"short-idle", idleMessage},
 		{"invalid-lifetime", "Harness.Lifetime is invalid: session: Absolute must be positive"},
 		{"missing-last-seen", "LastSeen is required when idle is on"},
 		{"missing-disable", `Disable is required unless NotApplicable["disable"] gives a reason`},
 		{"missing-count", "Count is required"},
 		{"blank-reason", `NotApplicable["disable"] requires a reason`},
 		{"idle-opt-out", `"idle" cannot be listed in NotApplicable`},
+		{"opt-out-with-disable", "NotApplicable[disable] set but its callback is provided; remove one"},
+		{"touch-negative", "TouchEvery must not be negative"},
+		{"touch-too-fine", "TouchEvery may only be coarser than session.TouchEvery"},
+		{"touch-too-coarse", idleMessage},
+		{"touch-huge", idleMessage},
+		{"touch-with-idle-off", "TouchEvery has no effect with IdleOff"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			out := runChild(t, tc.mode, true)
@@ -358,6 +441,19 @@ func TestBadConfigurations(t *testing.T) {
 				t.Fatalf("want configuration failure %q before any case runs:\n%s", tc.message, out)
 			}
 		})
+	}
+}
+
+func TestCallbackSkipFailsParent(t *testing.T) {
+	out := runChild(t, "callback-skip", true)
+	for _, message := range []string{
+		"sessiontest: case disable was skipped; use NotApplicable",
+		"--- FAIL: TestConformanceChild (",
+		"--- SKIP: TestConformanceChild/disable (",
+	} {
+		if !strings.Contains(out, message) {
+			t.Errorf("missing %q:\n%s", message, out)
+		}
 	}
 }
 
