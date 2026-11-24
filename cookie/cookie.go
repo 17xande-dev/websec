@@ -16,6 +16,11 @@ type Config struct {
 	Path           string // "" means "/"
 	Insecure       bool   // plain-HTTP development only: no Secure attribute or prefix
 	BrowserSession bool   // omit Max-Age and Expires
+
+	// Now returns the current time for Set's remaining-lifetime check and
+	// Max-Age. nil means time.Now. Set it when the server's session clock is
+	// injected, so expiry decisions and the cookie agree.
+	Now func() time.Time
 }
 
 // Cookie is an immutable session cookie policy created by New.
@@ -24,6 +29,7 @@ type Cookie struct {
 	path           string
 	secure         bool
 	browserSession bool
+	now            func() time.Time
 }
 
 // New validates the bare name and path and builds a session cookie policy.
@@ -45,11 +51,15 @@ func New(c Config) (*Cookie, error) {
 	if err := (&http.Cookie{Name: c.Name, Path: c.Path}).Valid(); err != nil || strings.Contains(c.Path, " ") {
 		return nil, errors.New("cookie: path must contain only printable ASCII without spaces or semicolons")
 	}
+	if c.Now == nil {
+		c.Now = time.Now
+	}
 	return &Cookie{
 		name:           PrefixedName(c.Name, c.Path, c.Insecure),
 		path:           c.Path,
 		secure:         !c.Insecure,
 		browserSession: c.BrowserSession,
+		now:            c.Now,
 	}, nil
 }
 
@@ -83,7 +93,7 @@ func (c *Cookie) Set(w http.ResponseWriter, value string, expires time.Time) {
 		panic("cookie: invalid session cookie value")
 	}
 	if !c.browserSession {
-		seconds := time.Until(expires) / time.Second
+		seconds := expires.Sub(c.now()) / time.Second
 		if seconds <= 0 {
 			// A MaxAge of zero would omit the attribute, not delete the cookie.
 			c.Clear(w)

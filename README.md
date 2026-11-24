@@ -152,9 +152,13 @@ sign-out.
   off cross-site POSTs without breaking navigation from ordinary links.
   Neither setting varies by route, even for an admin-path cookie.
 - Pass the server's absolute session expiry to `Set`. It writes both `Expires`
-  and `Max-Age`, rounding down to whole seconds. For directory-backed sign-in
-  that should not persist past the browser session, set `BrowserSession` to omit
-  both attributes. The server still enforces the session's expiry.
+  and `Max-Age`, rounding down to whole seconds. `Set` measures the remaining
+  time with `Config.Now` (default `time.Now`); pass the same clock your session
+  store uses. Re-sending the cookie on activity with the same
+  `AbsoluteExpiry(created)` keeps its deadline; it never extends the session.
+  For directory-backed sign-in that should not persist past the browser session,
+  set `BrowserSession` to omit both attributes. The server still enforces the
+  session's expiry.
 
 ## Request-forgery protection (`websec/csrf`)
 
@@ -445,23 +449,31 @@ row by the token hash and rewrites creation and last-seen times, plus any
 derived fields such as stored expiry or directory-check timestamps. For a
 SQLite hex-TEXT hash, address the row by the hex digest and write timestamps
 in the store's format. For a Postgres BYTEA hash, use the digest bytes and
-write `timestamptz` values; SQL `now()` stays unchanged. `RawRows` returns
-every stored session column, with text as-is and binary data rendered in hex.
-The result must grow when a session is added.
+write `timestamptz` values; SQL `now()` stays unchanged. Use the application's
+own hash function, or derive it in the test (`sha256.Sum256([]byte(token))`)
+if you want the test to pin the stored format. `RawRows` returns every stored
+session column, with text as-is and binary data rendered in hex. The result
+must grow when a session is added.
+
+If `Lookup` sends the token through your routes as a cookie, set
+`CookieTokens: true`: a Cookie header cannot carry the NUL and newline
+variants, so the suite sends a truncated and an extended token instead.
 
 The fixtures require the store's real absolute limit to be at least ten
 minutes. If idle expiry is enabled, the idle limit must be at least five
 minutes, at least four times the touch interval, and at least five minutes
 shorter than the absolute limit. Set `Harness.TouchEvery` to the store's
 interval if it is longer than the default minute. With `IdleOff`, leave
-`TouchEvery` unset and omit `LastSeen`; the suite reports why it skips idle
-and touch.
+`TouchEvery` unset and omit `LastSeen`; idle and touch pass without running
+and log why (`go test -v` shows the reason).
 
 `ChangePassword` returns the token still valid for the current browser:
 the current token, a rotated token, or `""` if all the user's sessions
 ended. Only `sessiontest.CaseDisable`, `CasePasswordChange` and
 `CaseRevokeUser` can be opted out. Leave the callback nil and give a reason in
-`NotApplicable`; the reason is visible in `go test -v`:
+`NotApplicable`. Those cases pass without running and log why
+(`go test -v` shows the reason); a case your callback skips with `t.Skip`
+fails the suite.
 
 ```go
 NotApplicable: map[sessiontest.Case]string{

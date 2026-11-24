@@ -38,9 +38,18 @@ type Harness struct {
 	TouchEvery     time.Duration                   // the store's touch interval; zero means session.TouchEvery
 	RevokeUser     func(t *testing.T, user string) // administrative or directory revocation
 
-	// NotApplicable may skip disable, password-change, or revoke-user with
-	// a non-blank reason, and only when the corresponding callback is nil.
+	// NotApplicable marks disable, password-change, or revoke-user as passing
+	// without running. The non-blank reason is logged, and the corresponding
+	// callback must be nil.
 	NotApplicable map[Case]string
+
+	// CookieTokens says Lookup delivers the token as a cookie value through
+	// the application's handlers. The miss case then sends only values a
+	// Cookie header carries unchanged: instead of the NUL and trailing-newline
+	// tokens it sends the live token without its last character and with one
+	// extra character. Lookup should call the handler directly (httptest),
+	// not through a network server, which would refuse the 1 MiB token.
+	CookieTokens bool
 }
 
 // Case names a subtest. Only CaseDisable, CasePasswordChange and
@@ -53,11 +62,11 @@ const (
 	CaseFresh Case = "fresh"
 	// CaseAbsolute checks the absolute lifetime.
 	CaseAbsolute Case = "absolute"
-	// CaseIdle checks the idle lifetime. It is skipped with IdleOff and
-	// cannot be listed in NotApplicable.
+	// CaseIdle checks the idle lifetime. It is not applicable with IdleOff
+	// and cannot be listed in NotApplicable.
 	CaseIdle Case = "idle"
-	// CaseTouch checks the last-seen refresh interval. It is skipped with
-	// IdleOff and cannot be listed in NotApplicable.
+	// CaseTouch checks the last-seen refresh interval. It is not applicable
+	// with IdleOff and cannot be listed in NotApplicable.
 	CaseTouch Case = "touch"
 	// CaseMiss checks that unknown, malformed, alternately encoded and
 	// absolute-expired tokens miss.
@@ -181,10 +190,12 @@ func Run(t *testing.T, h Harness) {
 		t.Run(string(tc.name), func(sub *testing.T) {
 			now := time.Now()
 			if l.IdleOff && (tc.name == CaseIdle || tc.name == CaseTouch) {
-				sub.Skip("idle off")
+				sub.Log("sessiontest: not applicable: idle expiry is off")
+				return
 			}
 			if reason, ok := h.NotApplicable[tc.name]; ok {
-				sub.Skipf("not applicable: %s", reason)
+				sub.Logf("sessiontest: not applicable: %s", reason)
+				return
 			}
 			sub.Cleanup(func() {
 				if sub.Skipped() {
@@ -324,12 +335,18 @@ func (h Harness) misses(t *testing.T, now time.Time) {
 	u := h.NewUser(t)
 	live, expired := h.Create(t, u), h.Create(t, u)
 	h.backdateAbsolute(t, expired, now, -m)
+	nulLabel, nulToken := "token with NUL", live+"\x00"
+	newlineLabel, newlineToken := "token with trailing newline", live+"\n"
+	if h.CookieTokens {
+		nulLabel, nulToken = "token missing its last character", live[:max(0, len(live)-1)]
+		newlineLabel, newlineToken = "token with an extra character", live+"a"
+	}
 	for _, tc := range []struct{ label, token string }{
 		{"empty token", ""},
 		{"short token", "x"},
 		{"oversized token", strings.Repeat("a", 1<<20)},
-		{"token with NUL", live + "\x00"},
-		{"token with trailing newline", live + "\n"},
+		{nulLabel, nulToken},
+		{newlineLabel, newlineToken},
 		{"absolute-expired token", expired},
 	} {
 		h.miss(t, tc.label, tc.token)

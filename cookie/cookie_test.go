@@ -111,6 +111,46 @@ func TestSetAttributes(t *testing.T) {
 	}
 }
 
+func TestSetUsesConfiguredClock(t *testing.T) {
+	now := time.Date(2001, time.January, 1, 0, 0, 0, 0, time.UTC)
+	policy := newCookie(t, cookie.Config{Name: "session", Now: func() time.Time { return now }})
+	for _, tc := range []struct {
+		name   string
+		left   time.Duration
+		maxAge int
+	}{
+		{"positive lifetime", 90 * time.Minute, 5400},
+		{"less than a whole second", 500 * time.Millisecond, 0},
+		{"past expiry", -time.Hour, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expires := now.Add(tc.left)
+			server := newServer(t, false, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/set" {
+					policy.Set(w, "token", expires)
+					return
+				}
+				value, _ := policy.Value(r)
+				io.WriteString(w, value)
+			})
+			client := server.Client()
+			got, raw := responseCookie(t, get(t, client, server.URL+"/set"))
+			checkAttributes(t, got, "__Host-session", "/", true)
+			if tc.maxAge == 0 {
+				checkDeletion(t, got, raw)
+				return
+			}
+			if got.Value != "token" || got.MaxAge != tc.maxAge || !got.Expires.Equal(expires) {
+				t.Errorf("Set-Cookie = %s, want token with Max-Age=%d and Expires=%v", raw, tc.maxAge, expires)
+			}
+			// Max-Age takes precedence over the past Expires date in the jar.
+			if got := body(t, get(t, client, server.URL)); got != "token" {
+				t.Errorf("cookie round trip = %q, want token", got)
+			}
+		})
+	}
+}
+
 func TestSetClearsExpiredCookie(t *testing.T) {
 	policy := newCookie(t, cookie.Config{Name: "session"})
 	for _, tc := range []struct {
