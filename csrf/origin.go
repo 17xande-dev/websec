@@ -25,9 +25,9 @@ func originPolicy(own string, trusted []string, insecure bool) (func(*url.URL) b
 		if err != nil {
 			return nil, fmt.Errorf("csrf: TrustedOrigins[%d]: %w", i, err)
 		}
-		if allowed[o] {
-			return nil, fmt.Errorf("csrf: TrustedOrigins[%d]: duplicate origin", i)
-		}
+		// An allow-list shared with a CORS setup legitimately repeats the
+		// public origin or an earlier entry; a harmless duplicate must not
+		// fail startup.
 		allowed[o] = true
 	}
 	return func(u *url.URL) bool {

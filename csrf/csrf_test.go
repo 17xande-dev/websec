@@ -45,8 +45,6 @@ func TestNew(t *testing.T) {
 		{"non-HTTP origin", func(c *csrf.Config) { c.Origin = "ftp://a.example" }},
 		{"plain HTTP without Insecure", func(c *csrf.Config) { c.Origin = "http://a.example" }},
 		{"invalid extra origin", func(c *csrf.Config) { c.TrustedOrigins = []string{"https://embed.example", "https://a.example/path"} }},
-		{"duplicate extra origin", func(c *csrf.Config) { c.TrustedOrigins = []string{"https://embed.example", "https://embed.example"} }},
-		{"extra origin duplicates own", func(c *csrf.Config) { c.TrustedOrigins = []string{ownOrigin} }},
 		{"plain HTTP extra without Insecure", func(c *csrf.Config) { c.TrustedOrigins = []string{"http://embed.example"} }},
 		{"insecure cross-site cookie", func(c *csrf.Config) { c.Insecure, c.CrossSite = true, true }},
 		{"negative default body cap", func(c *csrf.Config) { c.MaxBody = -1 }},
@@ -68,6 +66,8 @@ func TestNew(t *testing.T) {
 			}
 		})
 	}
+	// Duplicates are ignored; a malformed entry still fails (rows above).
+	mustNew(t, csrf.Config{Origin: ownOrigin, TrustedOrigins: []string{ownOrigin, "https://embed.example", "https://embed.example"}})
 	mustNew(t, csrf.Config{Origin: "https://[2001:db8::1]:8443", MaxBody: 64 << 20})
 	mustNew(t, csrf.Config{Origin: "http://app.example:8080", Insecure: true, TrustedOrigins: []string{"http://embed.example:8081"}})
 }
@@ -441,4 +441,27 @@ func send(t *testing.T, client *http.Client, req *http.Request) (*http.Response,
 		t.Fatal(err)
 	}
 	return resp, string(body)
+}
+
+// Repeating the own origin or an earlier entry changes nothing: the list is
+// still trusted exactly as written, and nothing else is.
+func TestDuplicateOriginsAreIgnored(t *testing.T) {
+	const embed = "https://embed.example"
+	p := mustNew(t, csrf.Config{Origin: ownOrigin, TrustedOrigins: []string{ownOrigin, embed, embed}})
+	s, client := server(t, p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, csrf.Token(r))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})))
+	token, _ := formToken(t, s, client, "/")
+	for origin, want := range map[string]int{ownOrigin: 204, embed: 204, "https://other.example": 403} {
+		req := request(t, "POST", s.URL, strings.NewReader(url.Values{csrf.FieldName: {token}}.Encode()))
+		req.Header.Set("Content-Type", urlencoded)
+		req.Header.Set("Origin", origin)
+		if resp, _ := send(t, client, req); resp.StatusCode != want {
+			t.Errorf("origin %s: status = %d, want %d", origin, resp.StatusCode, want)
+		}
+	}
 }
