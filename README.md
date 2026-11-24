@@ -610,6 +610,14 @@ value is the subtest name that `go test` prints.
 - **Unreleased**
   - `csrf.ValidateOrigin` and `csrf.New` refuse Unicode hosts and noncanonical
     IPv4 and IPv6 spellings that browsers don't use in `Origin` headers.
+    Upgrading: an `Origin` written in one of those spellings (for example
+    `https://127.1` or `https://äpp.example`) now fails at startup. Write the
+    form a browser sends: dotted-quad IPv4, compressed IPv6, Punycode for
+    international names.
+  - The `LogPath` example now falls back to a constant for a redirected raw
+    path, so a path carrying a secret is never logged.
+  - `cookie.Config.Now` is read once at construction; pass a closure when the
+    clock is swappable later.
 - **v0.3.0**
   - `csrf.ValidateOrigin` checks configuration with the same rules as `New`,
     which now also refuses ports with leading zeros and port zero.
