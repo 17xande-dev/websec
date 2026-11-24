@@ -157,8 +157,18 @@ sign-in, `Value` to read the credential, and `Clear` at sign-out.
   store uses. Re-sending the cookie on activity with the same
   `AbsoluteExpiry(created)` keeps its deadline; it never extends the session.
   For directory-backed sign-in that should not persist past the browser session,
-  set `BrowserSession` to omit both attributes. The server still enforces the
-  session's expiry.
+   set `BrowserSession` to omit both attributes. The server still enforces the
+   session's expiry.
+
+The policy reads `cookie.Config.Now` once at construction; if the application
+can swap its clock later (for example, in tests), pass a closure that reads
+the current clock on each call:
+
+```go
+cfg.Now = func() time.Time {
+	return app.now()
+}
+```
 
 ## Request-forgery protection (`websec/csrf`)
 
