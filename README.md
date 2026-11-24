@@ -191,8 +191,22 @@ The wrapper applies these rules in order:
 5. Nosurf checks the origin and token before running the handler.
 
 The kit's own refusals (413, 415 and 400) log one warning with the status,
-method and path (never the query, headers or body) and answer in plain text with
-`Cache-Control: no-store`. Set `Config.OnBodyError` to write the response
+method and path (never the query, headers or body; the path is logged as is
+unless `LogPath` is set) and answer in plain text with `Cache-Control: no-store`.
+If your paths carry credentials (one-time sign-in or reset links), set
+`LogPath` to return a redacted path or the mux pattern. With the mux
+initialized as shown below, for example:
+
+```go
+LogPath: func(r *http.Request) string {
+	_, pattern := mux.Load().Handler(r)
+	return pattern
+},
+```
+
+A `Logger` whose handler rewrites the top-level `path` attribute also works.
+
+Set `Config.OnBodyError` to write the response
 yourself; the warning is still logged. The hook runs after the kit has set
 `Cache-Control: no-store` and, for a 413 or 415 on HTTP/1, `Connection: close`
 (the body was not read, so the server must not drain it to reuse the

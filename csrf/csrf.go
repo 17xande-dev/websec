@@ -64,6 +64,12 @@ type Config struct {
 	// oversized-upload hand-off (see Oversized).
 	OnBodyError func(w http.ResponseWriter, r *http.Request, status int)
 	Logger      *slog.Logger // nil means slog.Default()
+
+	// LogPath returns the path written to the kit's log lines. nil logs
+	// r.URL.Path (never the query). Set it when paths carry credentials, such
+	// as one-time links: return a redacted path or the mux's matched pattern.
+	// It must not read the body.
+	LogPath func(*http.Request) string
 }
 
 // Protect holds a validated policy. Use New to construct it.
@@ -78,6 +84,7 @@ type Protect struct {
 	onFailure  http.Handler
 	onBodyErr  func(http.ResponseWriter, *http.Request, int)
 	logger     *slog.Logger
+	logPath    func(*http.Request) string
 }
 
 // New validates the policy and prepares it for use by Handler.
@@ -125,6 +132,9 @@ func New(c Config) (*Protect, error) {
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
+	if c.LogPath == nil {
+		c.LogPath = func(r *http.Request) string { return r.URL.Path }
+	}
 	return &Protect{
 		baseCookie: base,
 		renew:      renew,
@@ -136,6 +146,7 @@ func New(c Config) (*Protect, error) {
 		onFailure:  c.OnFailure,
 		onBodyErr:  c.OnBodyError,
 		logger:     c.Logger,
+		logPath:    c.LogPath,
 	}, nil
 }
 
@@ -147,7 +158,7 @@ func (p *Protect) Handler(next http.Handler) http.Handler {
 			// A valid header token can pass nosurf, but cannot lift the cap
 			// or send a request with a discarded body to the normal handler.
 			p.logger.WarnContext(r.Context(), "csrf: request refused",
-				"method", r.Method, "path", r.URL.Path, "reason", "oversized request with a header token")
+				"method", r.Method, "path", p.logPath(r), "reason", "oversized request with a header token")
 			w.Header().Set("Cache-Control", "no-store")
 			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
@@ -207,7 +218,7 @@ func (p *Protect) fail(w http.ResponseWriter, r *http.Request) {
 		reason = errors.New("malformed origin")
 	}
 	p.logger.WarnContext(r.Context(), "csrf: request refused",
-		"method", r.Method, "path", r.URL.Path, "reason", reason)
+		"method", r.Method, "path", p.logPath(r), "reason", reason)
 	p.onFailure.ServeHTTP(w, r)
 }
 

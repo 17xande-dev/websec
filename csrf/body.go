@@ -210,7 +210,7 @@ func requestMediaType(r *http.Request) (string, error) {
 
 // bodyError answers a refusal made by the kit itself before any token check.
 // The warning is logged whether or not OnBodyError replaces the response, and
-// never includes a request value other than the path (no query, no headers).
+// includes the configured log path, not the query, headers or body.
 //
 // Every 413 and 415 sets Connection: close on HTTP/1 before the hook runs.
 //
@@ -224,7 +224,7 @@ func (p *Protect) bodyError(w http.ResponseWriter, r *http.Request, status int, 
 		closeConnection(w, r)
 	}
 	p.logger.WarnContext(r.Context(), "csrf: request body refused",
-		"status", status, "method", r.Method, "path", r.URL.Path)
+		"status", status, "method", r.Method, "path", p.logPath(r))
 	// Set before the hook so a hook that writes a cacheable status is not
 	// cached; it may still override the header.
 	w.Header().Set("Cache-Control", "no-store")
@@ -243,7 +243,7 @@ func (p *Protect) limitError(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.NoBody
 	r.Form, r.PostForm, r.MultipartForm = nil, nil, nil
 	closeConnection(w, r)
-	p.logger.ErrorContext(r.Context(), "csrf: Limit returned MaxBytes above 64 MiB", "path", r.URL.Path)
+	p.logger.ErrorContext(r.Context(), "csrf: Limit returned MaxBytes above 64 MiB", "path", p.logPath(r))
 	w.Header().Set("Cache-Control", "no-store")
 	http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 }

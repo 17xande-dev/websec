@@ -197,6 +197,91 @@ func TestReasonSentinels(t *testing.T) {
 	}
 }
 
+func TestLogPath(t *testing.T) {
+	const (
+		path          = "/link/SECRETTOKEN"
+		redacted      = "/link/[redacted]"
+		multipartType = "multipart/form-data; boundary=test-boundary"
+		tokenMessage  = "csrf: request refused"
+		bodyMessage   = "csrf: request body refused"
+	)
+	for _, tc := range []struct {
+		name, mediaType, message, reason string
+		status                           int
+		staleToken, headerToken, unset   bool
+	}{
+		{name: "stale token", status: 403, staleToken: true, message: tokenMessage, reason: csrf.ErrBadToken.Error()},
+		{name: "oversize with header token", status: 403, headerToken: true, mediaType: multipartType,
+			message: tokenMessage, reason: "oversized request with a header token"},
+		{name: "declared body too large", status: 413, mediaType: urlencoded, message: bodyMessage},
+		{name: "multipart refused", status: 415, mediaType: multipartType, message: bodyMessage},
+		{name: "invalid limit", status: 500, message: "csrf: Limit returned MaxBytes above 64 MiB"},
+		{name: "default omits query", status: 403, staleToken: true, unset: true, message: tokenMessage, reason: csrf.ErrBadToken.Error()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs logBuffer
+			c := csrf.Config{Origin: ownOrigin, MaxBody: 1, Logger: slog.New(slog.NewJSONHandler(&logs, nil))}
+			if !tc.unset {
+				c.LogPath = func(*http.Request) string { return redacted }
+			}
+			if tc.headerToken {
+				c.Oversized = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					t.Error("oversized request with a header token reached the hand-off")
+					w.WriteHeader(http.StatusUnprocessableEntity)
+				})
+				c.Limit = func(*http.Request) csrf.BodyLimit {
+					return csrf.BodyLimit{
+						MultipartMaxBytes: 1,
+						PassOversized:     func(r *http.Request) bool { return r.URL.Path == path },
+					}
+				}
+			}
+			if tc.status == http.StatusInternalServerError {
+				c.Limit = func(*http.Request) csrf.BodyLimit { return csrf.BodyLimit{MaxBytes: 64<<20 + 1} }
+			}
+			p := mustNew(t, c)
+			s, client := server(t, p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, csrf.Token(r))
+			})))
+
+			target, wantPath := path, redacted
+			if tc.unset {
+				target, wantPath = path+"?q=x", path
+			}
+			var body io.Reader
+			if tc.mediaType != "" {
+				body = strings.NewReader("field=x")
+			}
+			req := request(t, http.MethodPost, s.URL+target, body)
+			req.Header.Set("Origin", ownOrigin)
+			req.Header.Set("Content-Type", tc.mediaType)
+			switch {
+			case tc.staleToken:
+				// Issue a fresh cookie but submit the token for the earlier one.
+				oldToken, _ := formToken(t, s, s.Client(), path)
+				formToken(t, s, client, path)
+				req.Header.Set(csrf.HeaderName, oldToken)
+			case tc.headerToken:
+				token, _ := formToken(t, s, client, path)
+				req.Header.Set(csrf.HeaderName, token)
+			}
+			if resp, _ := send(t, client, req); resp.StatusCode != tc.status {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tc.status)
+			}
+			raw := logs.String()
+			var record map[string]any
+			if err := json.Unmarshal([]byte(raw), &record); err != nil ||
+				record["path"] != wantPath || record["msg"] != tc.message ||
+				(tc.reason != "" && record["reason"] != tc.reason) {
+				t.Errorf("want one %q log with path %q, got %q", tc.message, wantPath, raw)
+			}
+			if (!tc.unset && strings.Contains(raw, "SECRETTOKEN")) || strings.Contains(raw, "q=x") {
+				t.Errorf("log disclosed the request token or query: %q", raw)
+			}
+		})
+	}
+}
+
 func TestInsecureOrigins(t *testing.T) {
 	// In plain-HTTP development the TLS answer must be false: nosurf then
 	// compares http://Host. A wrong answer would be hidden by the allowlist's
