@@ -316,15 +316,15 @@ func TestConformanceChild(t *testing.T) {
 	case "opt-out":
 		h.Disable, h.ChangePassword, h.RevokeUser = nil, nil, nil
 		h.NotApplicable = map[sessiontest.Case]string{
-			"disable": "no disabled accounts", "password-change": "no local password", "revoke-user": "no administrative revoke",
+			sessiontest.CaseDisable: "no disabled accounts", sessiontest.CasePasswordChange: "no local password", sessiontest.CaseRevokeUser: "no administrative revoke",
 		}
 	case "blank-reason":
 		h.Disable = nil
-		h.NotApplicable = map[sessiontest.Case]string{"disable": " \t"}
+		h.NotApplicable = map[sessiontest.Case]string{sessiontest.CaseDisable: " \t"}
 	case "idle-opt-out":
-		h.NotApplicable = map[sessiontest.Case]string{"idle": "not tested"}
+		h.NotApplicable = map[sessiontest.Case]string{sessiontest.CaseIdle: "not tested"}
 	case "opt-out-with-disable":
-		h.NotApplicable = map[sessiontest.Case]string{"disable": "no disabled accounts"}
+		h.NotApplicable = map[sessiontest.Case]string{sessiontest.CaseDisable: "no disabled accounts"}
 	case "callback-skip":
 		h.Disable = func(t *testing.T, _ string) { t.Skip("callback skipped") }
 	case "raw-rows-empty":
@@ -367,44 +367,44 @@ func TestMutations(t *testing.T) {
 	failedCase := regexp.MustCompile(`(?m)^\s*--- FAIL: TestConformanceChild/(\S+)`)
 	for _, tc := range []struct {
 		mutation string
-		cases    []string
+		cases    []sessiontest.Case
 		message  string
 	}{
 		// The absolute case and the dedicated idle/miss cases use some
 		// overlapping fixtures, so these failures are not mutually exclusive.
-		{"ignore-absolute", []string{"absolute", "miss"}, "past absolute deadline"},
-		{"ignore-idle", []string{"idle"}, "past idle deadline"},
-		{"idle-from-created", []string{"absolute", "idle"}, "before idle deadline"},
-		{"always-touch", []string{"touch"}, "Lookup changed LastSeen inside TouchEvery"},
-		{"never-touch", []string{"touch"}, "Lookup did not move LastSeen"},
-		{"ignore-future-touch", []string{"touch"}, "Lookup did not rewrite future LastSeen"},
-		{"touch-declared-hourly", []string{"touch"}, "Lookup changed LastSeen inside TouchEvery"},
-		{"malformed-error", []string{"miss"}, "short token: Lookup hit = false, error = true"},
-		{"malformed-panic", []string{"miss"}, "short token: Lookup panicked"},
-		{"decode-alternates", []string{"miss"}, "alternate token encoding: Lookup hit = true"},
-		{"disable-one", []string{"disable"}, "session: Lookup hit = true"},
-		{"disabled-accepted", []string{"disable"}, "disabled user's second session: Lookup hit = true"},
-		{"password-ends-all", []string{"password-change"}, "kept session: Lookup hit = false"},
-		{"password-keeps-all", []string{"password-change"}, "other session of the user changing password: Lookup hit = true"},
-		{"password-reports-ended", []string{"password-change"}, "current session after ending all sessions: Lookup hit = true"},
-		{"password-rotate-keeps-old", []string{"password-change"}, "old current session after rotation: Lookup hit = true"},
-		{"password-ends-other-user", []string{"password-change"}, "other user's session: Lookup hit = false"},
-		{"revoke-spares-one", []string{"revoke-user"}, "session: Lookup hit = true"},
-		{"sweep-live", []string{"sweep"}, "live session after sweep: Lookup hit = false"},
-		{"sweep-ignores-idle", []string{"sweep"}, "Sweep removed 1 rows, want 2"},
-		{"sweep-nothing", []string{"sweep"}, "Sweep removed 0 rows, want 2"},
-		{"sweep-nothing-idle-off", []string{"sweep"}, "Sweep removed 0 rows, want 1"},
-		{"raw-token", []string{"raw-token"}, "stored session columns contain the raw token"},
-		{"raw-rows-empty", []string{"raw-token"}, "sessiontest: RawRows returned nothing for stored sessions"},
-		{"raw-rows-static", []string{"raw-token"}, "sessiontest: RawRows returned nothing for stored sessions"},
-		{"short-token", []string{"distinct-tokens"}, "decodes to 16 bytes"},
-		{"short-hex-token", []string{"distinct-tokens"}, "decodes to 31 bytes"},
+		{"ignore-absolute", []sessiontest.Case{sessiontest.CaseAbsolute, sessiontest.CaseMiss}, "past absolute deadline"},
+		{"ignore-idle", []sessiontest.Case{sessiontest.CaseIdle}, "past idle deadline"},
+		{"idle-from-created", []sessiontest.Case{sessiontest.CaseAbsolute, sessiontest.CaseIdle}, "before idle deadline"},
+		{"always-touch", []sessiontest.Case{sessiontest.CaseTouch}, "Lookup changed LastSeen inside TouchEvery"},
+		{"never-touch", []sessiontest.Case{sessiontest.CaseTouch}, "Lookup did not move LastSeen"},
+		{"ignore-future-touch", []sessiontest.Case{sessiontest.CaseTouch}, "Lookup did not rewrite future LastSeen"},
+		{"touch-declared-hourly", []sessiontest.Case{sessiontest.CaseTouch}, "Lookup changed LastSeen inside TouchEvery"},
+		{"malformed-error", []sessiontest.Case{sessiontest.CaseMiss}, "short token: Lookup hit = false, error = true"},
+		{"malformed-panic", []sessiontest.Case{sessiontest.CaseMiss}, "short token: Lookup panicked"},
+		{"decode-alternates", []sessiontest.Case{sessiontest.CaseMiss}, "alternate token encoding: Lookup hit = true"},
+		{"disable-one", []sessiontest.Case{sessiontest.CaseDisable}, "session: Lookup hit = true"},
+		{"disabled-accepted", []sessiontest.Case{sessiontest.CaseDisable}, "disabled user's second session: Lookup hit = true"},
+		{"password-ends-all", []sessiontest.Case{sessiontest.CasePasswordChange}, "kept session: Lookup hit = false"},
+		{"password-keeps-all", []sessiontest.Case{sessiontest.CasePasswordChange}, "other session of the user changing password: Lookup hit = true"},
+		{"password-reports-ended", []sessiontest.Case{sessiontest.CasePasswordChange}, "current session after ending all sessions: Lookup hit = true"},
+		{"password-rotate-keeps-old", []sessiontest.Case{sessiontest.CasePasswordChange}, "old current session after rotation: Lookup hit = true"},
+		{"password-ends-other-user", []sessiontest.Case{sessiontest.CasePasswordChange}, "other user's session: Lookup hit = false"},
+		{"revoke-spares-one", []sessiontest.Case{sessiontest.CaseRevokeUser}, "session: Lookup hit = true"},
+		{"sweep-live", []sessiontest.Case{sessiontest.CaseSweep}, "live session after sweep: Lookup hit = false"},
+		{"sweep-ignores-idle", []sessiontest.Case{sessiontest.CaseSweep}, "Sweep removed 1 rows, want 2"},
+		{"sweep-nothing", []sessiontest.Case{sessiontest.CaseSweep}, "Sweep removed 0 rows, want 2"},
+		{"sweep-nothing-idle-off", []sessiontest.Case{sessiontest.CaseSweep}, "Sweep removed 0 rows, want 1"},
+		{"raw-token", []sessiontest.Case{sessiontest.CaseRawToken}, "stored session columns contain the raw token"},
+		{"raw-rows-empty", []sessiontest.Case{sessiontest.CaseRawToken}, "sessiontest: RawRows returned nothing for stored sessions"},
+		{"raw-rows-static", []sessiontest.Case{sessiontest.CaseRawToken}, "sessiontest: RawRows returned nothing for stored sessions"},
+		{"short-token", []sessiontest.Case{sessiontest.CaseDistinctTokens}, "decodes to 16 bytes"},
+		{"short-hex-token", []sessiontest.Case{sessiontest.CaseDistinctTokens}, "decodes to 31 bytes"},
 	} {
 		t.Run(tc.mutation, func(t *testing.T) {
 			out := runChild(t, tc.mutation, true)
-			var got []string
+			var got []sessiontest.Case
 			for _, match := range failedCase.FindAllStringSubmatch(out, -1) {
-				got = append(got, match[1])
+				got = append(got, sessiontest.Case(match[1]))
 			}
 			if !slices.Equal(got, tc.cases) {
 				t.Fatalf("failing cases = %v, want %v:\n%s", got, tc.cases, out)
@@ -473,5 +473,33 @@ func TestVisibleSkips(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The constants are the subtest names printed by go test; a changed value
+// would silently rename them for every adapter.
+func TestCaseNames(t *testing.T) {
+	for c, want := range map[sessiontest.Case]string{
+		sessiontest.CaseFresh:          "fresh",
+		sessiontest.CaseAbsolute:       "absolute",
+		sessiontest.CaseIdle:           "idle",
+		sessiontest.CaseTouch:          "touch",
+		sessiontest.CaseMiss:           "miss",
+		sessiontest.CaseDisable:        "disable",
+		sessiontest.CasePasswordChange: "password-change",
+		sessiontest.CaseRevokeUser:     "revoke-user",
+		sessiontest.CaseSweep:          "sweep",
+		sessiontest.CaseRawToken:       "raw-token",
+		sessiontest.CaseDistinctTokens: "distinct-tokens",
+	} {
+		if string(c) != want {
+			t.Errorf("Case %q, want %q", c, want)
+		}
+	}
+	out := runChild(t, "opt-out", false)
+	for _, name := range []string{"fresh", "absolute", "idle", "touch", "miss", "disable", "password-change", "revoke-user", "sweep", "raw-token", "distinct-tokens"} {
+		if !strings.Contains(out, "TestConformanceChild/"+name+" ") {
+			t.Errorf("go test output has no subtest %q:\n%s", name, out)
+		}
 	}
 }

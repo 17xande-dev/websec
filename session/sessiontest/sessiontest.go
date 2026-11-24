@@ -43,9 +43,44 @@ type Harness struct {
 	NotApplicable map[Case]string
 }
 
-// Case names a subtest. Only "disable", "password-change", and "revoke-user"
-// can be used in Harness.NotApplicable.
+// Case names a subtest. Only CaseDisable, CasePasswordChange and
+// CaseRevokeUser can be used in Harness.NotApplicable.
 type Case string
+
+// The subtest names, as they appear in go test output.
+const (
+	// CaseFresh checks that new sessions resolve to their own users.
+	CaseFresh Case = "fresh"
+	// CaseAbsolute checks the absolute lifetime.
+	CaseAbsolute Case = "absolute"
+	// CaseIdle checks the idle lifetime. It is skipped with IdleOff and
+	// cannot be listed in NotApplicable.
+	CaseIdle Case = "idle"
+	// CaseTouch checks the last-seen refresh interval. It is skipped with
+	// IdleOff and cannot be listed in NotApplicable.
+	CaseTouch Case = "touch"
+	// CaseMiss checks that unknown, malformed, alternately encoded and
+	// absolute-expired tokens miss.
+	CaseMiss Case = "miss"
+	// CaseDisable checks that disabling an account ends its sessions. It may
+	// be listed in NotApplicable.
+	CaseDisable Case = "disable"
+	// CasePasswordChange checks the effect of a user's own password change
+	// on their sessions. It may be listed in NotApplicable.
+	CasePasswordChange Case = "password-change"
+	// CaseRevokeUser checks administrative or directory revocation. It may
+	// be listed in NotApplicable.
+	CaseRevokeUser Case = "revoke-user"
+	// CaseSweep checks that the sweep removes expired sessions, reports how
+	// many, and keeps live ones.
+	CaseSweep Case = "sweep"
+	// CaseRawToken checks that no stored column holds the raw token or an
+	// encoding of it.
+	CaseRawToken Case = "raw-token"
+	// CaseDistinctTokens checks that created tokens are distinct and long
+	// enough.
+	CaseDistinctTokens Case = "distinct-tokens"
+)
 
 const m = time.Minute
 
@@ -97,7 +132,7 @@ func Run(t *testing.T, h Harness) {
 	}
 	for c := range h.NotApplicable {
 		switch c {
-		case "disable", "password-change", "revoke-user":
+		case CaseDisable, CasePasswordChange, CaseRevokeUser:
 		default:
 			t.Fatalf("sessiontest: %q cannot be listed in NotApplicable", c)
 		}
@@ -107,9 +142,9 @@ func Run(t *testing.T, h Harness) {
 		name    string
 		missing bool
 	}{
-		{"disable", "Disable", h.Disable == nil},
-		{"password-change", "ChangePassword", h.ChangePassword == nil},
-		{"revoke-user", "RevokeUser", h.RevokeUser == nil},
+		{CaseDisable, "Disable", h.Disable == nil},
+		{CasePasswordChange, "ChangePassword", h.ChangePassword == nil},
+		{CaseRevokeUser, "RevokeUser", h.RevokeUser == nil},
 	} {
 		reason, optedOut := h.NotApplicable[f.c]
 		if optedOut && !f.missing {
@@ -131,21 +166,21 @@ func Run(t *testing.T, h Harness) {
 		name Case
 		run  func(Harness, *testing.T, time.Time)
 	}{
-		{"fresh", Harness.fresh},
-		{"absolute", Harness.absolute},
-		{"idle", Harness.idle},
-		{"touch", Harness.touch},
-		{"miss", Harness.misses},
-		{"disable", Harness.disable},
-		{"password-change", Harness.passwordChange},
-		{"revoke-user", Harness.revokeUser},
-		{"sweep", Harness.sweep},
-		{"raw-token", Harness.rawToken},
-		{"distinct-tokens", Harness.distinctTokens},
+		{CaseFresh, Harness.fresh},
+		{CaseAbsolute, Harness.absolute},
+		{CaseIdle, Harness.idle},
+		{CaseTouch, Harness.touch},
+		{CaseMiss, Harness.misses},
+		{CaseDisable, Harness.disable},
+		{CasePasswordChange, Harness.passwordChange},
+		{CaseRevokeUser, Harness.revokeUser},
+		{CaseSweep, Harness.sweep},
+		{CaseRawToken, Harness.rawToken},
+		{CaseDistinctTokens, Harness.distinctTokens},
 	} {
 		t.Run(string(tc.name), func(sub *testing.T) {
 			now := time.Now()
-			if l.IdleOff && (tc.name == "idle" || tc.name == "touch") {
+			if l.IdleOff && (tc.name == CaseIdle || tc.name == CaseTouch) {
 				sub.Skip("idle off")
 			}
 			if reason, ok := h.NotApplicable[tc.name]; ok {
