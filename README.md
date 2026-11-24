@@ -152,9 +152,13 @@ sign-out.
   off cross-site POSTs without breaking navigation from ordinary links.
   Neither setting varies by route, even for an admin-path cookie.
 - Pass the server's absolute session expiry to `Set`. It writes both `Expires`
-  and `Max-Age`, rounding down to whole seconds. For directory-backed sign-in
-  that should not persist past the browser session, set `BrowserSession` to omit
-  both attributes. The server still enforces the session's expiry.
+  and `Max-Age`, rounding down to whole seconds. `Set` measures the remaining
+  time with `Config.Now` (default `time.Now`); pass the same clock your session
+  store uses. Re-sending the cookie on activity with the same
+  `AbsoluteExpiry(created)` keeps its deadline; it never extends the session.
+  For directory-backed sign-in that should not persist past the browser session,
+  set `BrowserSession` to omit both attributes. The server still enforces the
+  session's expiry.
 
 ## Request-forgery protection (`websec/csrf`)
 
