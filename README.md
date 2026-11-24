@@ -170,8 +170,12 @@ Nosurf parses forms to find the token. Without a cap in front, an anonymous
 request could make the server read and spool a large body before authentication.
 The wrapper applies these rules in order:
 
-1. GET, HEAD, OPTIONS and TRACE skip the body cap. Non-exempt requests still go
-   through nosurf so a form page can issue a token.
+1. GET, HEAD, OPTIONS and TRACE are capped at `MaxBody` too (`Limit` is not
+   consulted) and refuse a multipart `Content-Type` with 415 before reading
+   anything: browsers send no body on these methods, but Go's
+   `Request.FormValue` parses and spools a multipart one for any method.
+   Non-exempt safe requests still skip the token check and go through nosurf
+   so a form page can issue a token.
 2. On unsafe methods, resolve the limit (`MaxBody` defaults to 256 KiB, and `Limit`
    can override it). An oversized declared length returns 413 unless the
    upload opts into a custom refusal (see below). Multipart data returns 415
@@ -183,6 +187,28 @@ The wrapper applies these rules in order:
    reads return 413, other parse failures return 400, and multipart temporary
    files are cleaned up after the request.
 5. Nosurf checks the origin and token before running the handler.
+
+The kit's own refusals (413, 415 and 400) log one warning with the status,
+method and path (never the query, headers or body) and answer in plain text with
+`Cache-Control: no-store`. Set `Config.OnBodyError` to write the response
+yourself; the warning is still logged. The hook must not read the body. It is
+not called for CSRF failures (`OnFailure`) or the oversized-upload hand-off
+(`Oversized`). For example, to show a refusal inside an htmx target:
+
+```go
+OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Retarget", "#form-errors")
+		w.Header().Set("HX-Reswap", "innerHTML")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		fmt.Fprint(w, "That request was too large or malformed. Please try again.")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, http.StatusText(status), status)
+},
+```
 
 Choose a per-route cap using the mux's actual match (or configure limits on the
 already-routed handlers), not a string prefix on the incoming path. Alternate
@@ -230,7 +256,8 @@ custom handler runs only if the origin check passed and the missing form token
 is the only CSRF failure, with no `X-CSRF-Token` header present. It must not
 upload anything or change state. Untrusted origins and requests with a CSRF
 header are refused. Anonymous or unpermitted callers, exempt routes, and
-routes without the opt-in keep the plain 413. Streamed uploads that exceed
+routes without the opt-in keep the plain 413. A valid `X-CSRF-Token` on an
+oversized hand-off is refused with 403 and logged. Streamed uploads that exceed
 the cap still get 413 after a bounded read; uploads at or below the cap still
 need a valid token.
 
@@ -326,7 +353,8 @@ reason is visible in `go test -v`.
 
 - **v0.2.0 (unreleased)**: Session cookie helpers, session lifetime policy,
   store conformance tests, and CSRF protection with bounded form parsing and
-  opt-in oversized-upload responses.
+  opt-in oversized-upload responses, a body cap and multipart refusal on safe
+  methods, and an `OnBodyError` hook.
 - **v0.1.1**: `FuzzSafeRedirect` is now seeded with the browser-semantics rows
   as well as the general table, plus `/admin/x%2fy`, so a mutant that matches
   `Prefix` against the decoded path is caught from the seed corpus. Tests only;
