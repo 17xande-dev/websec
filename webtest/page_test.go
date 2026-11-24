@@ -100,6 +100,7 @@ func TestFormValues(t *testing.T) {
 				"csrf_token": {"a+b="}, "version": {"v&1"}, "title": {"A & B"}, "date": {"2026-10-02"},
 				"empty": {""}, "check": {"on", ""}, "radio": {"yes"}, "defaultRadio": {"on"},
 				"note": {"first <input> +\nsecond"}, "emptyNote": {""}, "one": {"x+y"},
+				"last":          {"b"},
 				"defaultSelect": {"First & second"}, "several": {"one", ""},
 			},
 		},

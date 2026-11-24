@@ -31,7 +31,7 @@ func TestMinCount(t *testing.T) {
 }
 
 func TestRoutes(t *testing.T) {
-	patterns := []string{"GET /items/{id}", "POST /files/{tail...}", "HEAD /{$}", "GET /items/{$}", "PATCH /item"}
+	patterns := []string{"GET /items/{id}", "POST /files/{tail...}", "HEAD /{$}", "GET /items/{$}", "PATCH /item", "M-SEARCH /items"}
 	routes := Routes(t, patterns, map[string]string{"id": "a/b", "tail": "a b/c#d"})
 	want := []Route{
 		{Method: "GET", Path: "/items/a%2Fb", Pattern: patterns[0]},
@@ -39,6 +39,7 @@ func TestRoutes(t *testing.T) {
 		{Method: "HEAD", Path: "/", Pattern: patterns[2]},
 		{Method: "GET", Path: "/items/", Pattern: patterns[3]},
 		{Method: "PATCH", Path: "/item", Pattern: patterns[4]},
+		{Method: "M-SEARCH", Path: "/items", Pattern: patterns[5]},
 	}
 	if !slices.Equal(routes, want) {
 		t.Errorf("Routes = %+v; want %+v", routes, want)
@@ -67,6 +68,8 @@ func TestRoutesFailures(t *testing.T) {
 		name, pattern, wantMsg string
 	}{
 		{"no method", "/items/{id}", `route "/items/{id}": want METHOD /path`},
+		{"lowercase method", "get /items", `invalid method "get"`},
+		{"invalid method", "G@T /items", `invalid method "G@T"`},
 		{"missing fill", "GET /items/{id}", `no fill for wildcard "id"`},
 		{"missing tail fill", "GET /files/{tail...}", `no fill for wildcard "tail"`},
 		{"host pattern", "GET app.example/items", "host patterns are not supported"},
@@ -268,6 +271,27 @@ func TestSweepReportsEveryFailedRoute(t *testing.T) {
 	}
 }
 
+func TestSweepRefusesUnsendableCookie(t *testing.T) {
+	attempts := 0
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	checkFailure(t, func(tb testing.TB) {
+		Sweep{
+			Routes:  Routes(tb, []string{"GET /items"}, nil),
+			Min:     1,
+			Client:  func() *Client { return New(tb, h, "http://app.example") },
+			NoToken: true,
+			Cookies: []*http.Cookie{{Name: "__Host-session", Value: "made-up", Path: "/", Secure: true}},
+			Refused: Status(http.StatusUnauthorized),
+		}.Run(tb)
+	}, true, `SetCookie "__Host-session": the jar would not send it to http://app.example`)
+	if attempts != 1 {
+		t.Errorf("sent %d requests; want only the anonymous request", attempts)
+	}
+}
+
 func TestRefusalChecks(t *testing.T) {
 	for _, tt := range []struct {
 		name, method string
@@ -284,6 +308,7 @@ func TestRefusalChecks(t *testing.T) {
 		{"wrong status", "POST", 403, nil, Status(401), "want status 401; got 403"},
 		{"head uses safe", "HEAD", 401, nil, ByMethod(Status(403), Status(401)), "want status 403; got 401"},
 		{"options uses other", "OPTIONS", 401, nil, ByMethod(Status(401), Status(403)), "want status 403; got 401"},
+		{"trace uses other", "TRACE", 401, nil, ByMethod(Status(401), Status(403)), "want status 403; got 401"},
 		{"missing check", "GET", 401, nil, ByMethod(nil, Status(401)), `no refusal check for method "GET"`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

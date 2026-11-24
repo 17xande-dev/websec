@@ -9,6 +9,8 @@ import (
 
 // failRecorder embeds TB to satisfy its private method. The assertions use
 // the methods below instead of failing the test that is checking them.
+// Do not use the delegated Skip methods, Cleanup, Setenv, TempDir or Log
+// in recorder rows: those run on the real TB from the recorder goroutine.
 type failRecorder struct {
 	testing.TB
 	failed   bool

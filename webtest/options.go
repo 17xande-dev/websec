@@ -6,6 +6,8 @@ import "net/http"
 type Option func(*http.Request)
 
 // WithOrigin sets the Origin header without changing the request URL.
+// As a constructor option it sets the header on every request, even on
+// safe methods that would not otherwise send Origin.
 func WithOrigin(origin string) Option { return Header("Origin", origin) }
 
 // NoOrigin removes the Origin header.

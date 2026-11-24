@@ -618,12 +618,33 @@ c := webtest.New(t, app, "https://app.example") // in-process
 c.Get("/ready").WantStatus(http.StatusNoContent)
 ```
 
-The client keeps cookies, sends the browser's `Origin` on unsafe requests,
-and neither follows redirects nor parses `Location` unless explicitly asked
-to follow. Go's `http.Client` fails on a Location such as `"/\t/evil.example"`
-before a test can see it; a browser reads that value as `//evil.example`.
-In-process tests see what the handler wrote. Over a connection Go's reader
+Build the client inside the test that makes assertions; never share one
+across `t.Run` subtests. Assertions report to the `testing.TB` given when
+the client was built.
+
+The client keeps cookies and sends its `Origin` on unsafe requests by default.
+Use `WithOrigin` to override the header without changing the request URL.
+As a constructor option it sets the header on every request, including safe
+methods; as a request option it sets it only for that request.
+
+Use an `https://` origin in-process and `httptest.NewTLSServer` with `NewServer`
+to test production cookie and CSRF settings. The Go jar does not send Secure
+cookies to non-loopback HTTP origins; it may still send them to an HTTP
+loopback server. The jar does not enforce cookie prefixes, so use `WantCookie`
+to check them.
+
+The client neither follows redirects nor parses `Location` automatically.
+`Follow` explicitly follows a parseable same-origin 3xx `Location` with a GET;
+to check another target, assert on `Location` or use `WantRedirect` instead.
+Go's `http.Client` fails on a Location such as `"/\t/evil.example"` before a
+test can see it; a browser reads that value as `//evil.example`. In-process
+tests see what the handler wrote. Use `Header.Set` or `Header.Add` to write
+the canonical `Location` key for the helpers. Over a connection Go's reader
 refuses some bytes, and the server turns CR/LF into spaces.
+
+In-process responses do not get automatic `Date` or `Content-Length` headers.
+The in-process transport also does not recover handler panics or remove
+multipart temp files for the handler.
 
 The client does not send `Sec-Fetch-Site` unless asked: `same-origin` makes
 nosurf skip its Origin comparison, which could hide a wrong trusted origin.
@@ -634,8 +655,16 @@ res.WantRedirect(http.StatusSeeOther, "/")
 c.Page("/items/new").Form("/items").Set("title", "A").Submit().WantStatus(http.StatusSeeOther)
 ```
 
+Use `Page.Form("")` if the page has exactly one form. Submit buttons are not
+included automatically: use `Set` to add the clicked button's name and value.
+
 Sweep every protected route with its own method. `Run` fails on 2xx, 404, 405
-and 5xx whatever `Refused` says, and on fewer protected routes than `Min`:
+and 5xx whatever `Refused` says, and on fewer protected routes than `Min`.
+It returns the number of protected routes swept, not the number of requests.
+Routes marked `Public` must give a `Why`; they are logged and skipped.
+Each `Cookies` entry is tried separately. `SetCookie` fails if the jar would
+not send that cookie to the base URL (for example, a Secure cookie on a
+non-loopback HTTP origin), so an unsendable variant cannot pass anonymously.
 
 ```go
 webtest.Sweep{
@@ -646,6 +675,8 @@ webtest.Sweep{
 	Refused:   webtest.ByMethod(webtest.RedirectsTo("/login?next="), webtest.Status(http.StatusUnauthorized)),
 }.Run(t)
 ```
+
+See the [compiled sweep and sign-in example](webtest/example_test.go).
 
 `WantCookie` checks the named response cookie against literal attributes as
 well as the browser's prefix rules. Write the expected wire name (such as
@@ -658,18 +689,24 @@ exact read-count assertion belongs in-process: on the wire `N()` counts what
 the client pulled from the source, not necessarily what the handler read.
 Call the check returned by `NoTempFiles(t)` after the request. It detects
 leftovers, not files already removed, and uses `t.Setenv`, so do not use it
-with `t.Parallel` or in a parallel ancestor's subtest.
+with `t.Parallel` or in a parallel ancestor's subtest. A subtest's first
+`t.TempDir` call can create a directory under the watched `TMPDIR`, which the
+check will report as a leftover.
 
 `Logger` captures Debug and higher slog records as JSON. Wait for any
 asynchronous logging before calling `NoSecrets` with the captured text, a
 literal marker from the expected log record, and secrets of at least 12 bytes.
-It rejects raw and encoded forms anywhere in the log. See the
+It rejects raw and encoded forms anywhere in the captured log. Failed
+response assertions can print up to 300 bytes of the response body, so test
+output can still contain values rendered by the handler. See the
 [upload refusal test](webtest/example_test.go) for a complete example.
 
 Use `Raw` with a test server's TCP address and a verbatim request containing
-`Connection: close` to inspect header bytes Go's HTTP reader rejects. It
-cannot undo CR/LF replacement already performed by the server. Use
-`HostileRedirects()` as inputs and assert a literal fallback Location.
+`Connection: close` to inspect header bytes Go's HTTP reader rejects. It uses
+plain TCP, not TLS, and rejects HEAD requests; use `Client.Do` for HEAD.
+Reads expect the advertised response framing and have a 30-second connection
+deadline. `Raw` cannot undo CR/LF replacement already performed by the server.
+Use `HostileRedirects()` as inputs and assert a literal fallback Location.
 
 ## Changes
 

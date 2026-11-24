@@ -8,6 +8,8 @@ import (
 // NoTempFiles sets TMPDIR to a fresh directory and returns a check for
 // anything left in it. Because it uses t.Setenv, do not call it in a parallel
 // test or one with a parallel ancestor.
+// A subtest's first t.TempDir call can create a directory under the watched
+// TMPDIR, which the check will report as a leftover.
 //
 // It cannot see files created and removed before the check. In-process tests
 // are stricter: they do not get net/http's automatic multipart cleanup.

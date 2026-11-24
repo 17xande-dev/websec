@@ -31,8 +31,9 @@ type Route struct {
 }
 
 // Routes turns registered "METHOD /path" patterns into protected routes.
-// It fills {name} as one path segment and {name...} as a slash-separated
-// tail, escaping each segment. The end marker {$} needs no fill value.
+// Methods must be uppercase HTTP tokens. It fills {name} as one path segment
+// and {name...} as a slash-separated tail, escaping each segment. The end
+// marker {$} needs no fill value.
 func Routes(t testing.TB, patterns []string, fill map[string]string) []Route {
 	t.Helper()
 	routes := make([]Route, 0, len(patterns))
@@ -40,6 +41,11 @@ func Routes(t testing.TB, patterns []string, fill map[string]string) []Route {
 		fields := strings.Fields(pattern)
 		if len(fields) != 2 {
 			t.Fatalf("route %q: want METHOD /path", pattern)
+		}
+		if strings.ContainsFunc(fields[0], func(r rune) bool {
+			return !('A' <= r && r <= 'Z' || '0' <= r && r <= '9' || strings.ContainsRune("!#$%&'*+-.^_`|~", r))
+		}) {
+			t.Fatalf("route %q: invalid method %q; want an uppercase HTTP token", pattern, fields[0])
 		}
 		if !strings.HasPrefix(fields[1], "/") {
 			t.Fatalf("route %q: host patterns are not supported; want METHOD /path", pattern)
@@ -86,7 +92,7 @@ type Sweep struct {
 	TokenPage string                       // fetch a token for unsafe requests
 	NoToken   bool                         // explicitly skip token fetching, e.g. when session checks run first
 	Form      url.Values                   // extra fields for unsafe requests
-	Cookies   []*http.Cookie               // try each cookie in a separate attempt
+	Cookies   []*http.Cookie               // try each cookie separately; the jar must send it to the base URL
 	Refused   func(Route, *Response) error // required app-specific refusal check
 }
 
@@ -198,6 +204,7 @@ func (r Route) name() string {
 }
 
 // RedirectsTo requires a 303 and exactly one raw Location starting with prefix.
+// Like Response.Location, it uses the canonical Location header key.
 func RedirectsTo(prefix string) func(Route, *Response) error {
 	return func(_ Route, r *Response) error {
 		locations := r.Header.Values("Location")
@@ -219,7 +226,8 @@ func Status(code int) func(Route, *Response) error {
 	}
 }
 
-// ByMethod applies safe to GET and HEAD routes and unsafe to all others.
+// ByMethod applies safe to GET and HEAD routes and unsafe to all others,
+// including OPTIONS and TRACE. Sweep still sends no token on OPTIONS or TRACE.
 func ByMethod(safe, unsafe func(Route, *Response) error) func(Route, *Response) error {
 	return func(route Route, r *Response) error {
 		check := unsafe

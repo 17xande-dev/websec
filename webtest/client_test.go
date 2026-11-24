@@ -74,6 +74,10 @@ func TestRequestOptions(t *testing.T) {
 			name: "explicit origin on safe method", method: http.MethodGet,
 			opts: []Option{WithOrigin(testOrigin)}, want: [4]string{testOrigin},
 		},
+		{
+			name: "explicit constructor origin on safe method", method: http.MethodGet,
+			defaults: []Option{WithOrigin(testOrigin + ":8443")}, want: [4]string{testOrigin + ":8443"},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +143,26 @@ func TestPostForm(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	New(t, h, testOrigin).PostForm("/", url.Values{"item": {"a b", "x+y"}}).WantStatus(http.StatusNoContent)
+}
+
+func TestRequestContentLengthHeader(t *testing.T) {
+	for _, mode := range []string{"in-process", "server"} {
+		t.Run(mode, func(t *testing.T) {
+			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				io.WriteString(w, r.Header.Get("Content-Length"))
+			})
+			c := testClient(t, h, mode)
+			for _, tt := range []struct{ method, body, want string }{
+				{"GET", "", ""},
+				{"POST", "", "0"},
+				{"POST", "abc", "3"},
+			} {
+				if got := c.Do(c.NewRequest(tt.method, "/", strings.NewReader(tt.body))).Body; got != tt.want {
+					t.Errorf("%s with body %q: Content-Length = %q; want %q", tt.method, tt.body, got, tt.want)
+				}
+			}
+		})
+	}
 }
 
 func TestStreamed(t *testing.T) {
@@ -228,6 +252,39 @@ func TestCookieJar(t *testing.T) {
 	}
 }
 
+func TestSetCookieRefusesUnsendableCookie(t *testing.T) {
+	for _, tt := range []struct {
+		name, origin string
+		cookie       http.Cookie
+	}{
+		{"secure on HTTP", "http://app.example", http.Cookie{Name: "session", Value: "made-up", Secure: true}},
+		{"wrong domain", testOrigin, http.Cookie{Name: "session", Value: "made-up", Domain: "other.example"}},
+		{"wrong path", testOrigin, http.Cookie{Name: "session", Value: "made-up", Path: "/area"}},
+		{"expired", testOrigin, http.Cookie{Name: "session", Value: "made-up", MaxAge: -1}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			checkFailure(t, func(tb testing.TB) {
+				c := New(tb, http.NotFoundHandler(), tt.origin)
+				c.SetCookie(&tt.cookie)
+			}, true, `SetCookie "session": the jar would not send it to `+tt.origin)
+		})
+	}
+}
+
+func TestSetCookieRefusesRejectedReplacement(t *testing.T) {
+	checkFailure(t, func(tb testing.TB) {
+		c := New(tb, http.NotFoundHandler(), testOrigin)
+		c.SetCookie(&http.Cookie{Name: "session", Value: "previous"})
+		c.SetCookie(&http.Cookie{Name: "session", Value: "replacement", Domain: "other.example"})
+	}, true, `SetCookie "session": the jar would not send it to `+testOrigin)
+}
+
+func TestSetCookieRejectsNil(t *testing.T) {
+	checkFailure(t, func(tb testing.TB) {
+		New(tb, http.NotFoundHandler(), testOrigin).SetCookie(nil)
+	}, true, "SetCookie: nil cookie")
+}
+
 func TestFollow(t *testing.T) {
 	for _, location := range []string{"next?q=1", "https://app.example/area/next?q=1"} {
 		t.Run(location, func(t *testing.T) {
@@ -245,6 +302,26 @@ func TestFollow(t *testing.T) {
 			})
 			c := New(t, h, testOrigin)
 			c.Follow(c.PostForm("/area/start", nil)).WantStatus(http.StatusNoContent)
+		})
+	}
+}
+
+func TestFollowRefusesOffOrigin(t *testing.T) {
+	for _, location := range []string{"https://other.example/final", "http://app.example/final", "https://app.example:8443/final"} {
+		t.Run(location, func(t *testing.T) {
+			requests := 0
+			h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests++
+				w.Header().Set("Location", location)
+				w.WriteHeader(http.StatusSeeOther)
+			})
+			checkFailure(t, func(tb testing.TB) {
+				c := New(tb, h, testOrigin)
+				c.Follow(c.Get("/start"))
+			}, true, `leaves `+testOrigin+`; assert on Location() instead`)
+			if requests != 1 {
+				t.Errorf("sent %d requests; want only the initial request", requests)
+			}
 		})
 	}
 }

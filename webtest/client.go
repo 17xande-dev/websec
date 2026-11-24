@@ -8,12 +8,15 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 // Client sends HTTP requests with a cookie jar and an Origin on unsafe
 // methods by default. It does not follow redirects or parse Location headers.
+// Build it inside the test that makes assertions; never share it across
+// t.Run subtests. Assertions report to the testing.TB given at construction.
 type Client struct {
 	t         testing.TB
 	base      *url.URL
@@ -26,6 +29,9 @@ type Client struct {
 // New serves requests in-process through h. The origin (for example,
 // "https://app.example") is the base URL for requests; an HTTPS origin
 // simulates TLS. Response headers include bytes that the HTTP reader rejects.
+// The jar does not send Secure cookies to non-loopback HTTP origins. Use
+// HTTPS in-process and httptest.NewTLSServer with NewServer to test production
+// cookie settings. The jar does not enforce cookie prefixes; use WantCookie.
 func New(t testing.TB, h http.Handler, origin string, opts ...Option) *Client {
 	t.Helper()
 	return newClient(t, origin, handlerTransport{h}, opts)
@@ -129,8 +135,8 @@ func (c *Client) Do(req *http.Request, opts ...Option) *Response {
 }
 
 // Follow explicitly sends a GET to a 3xx response's Location, resolved
-// against the original request URL. It fails if Location is missing or
-// cannot be parsed.
+// against the original request URL. It fails if Location is missing, cannot
+// be parsed, or leaves the client's origin.
 func (c *Client) Follow(r *Response) *Response {
 	c.t.Helper()
 	if r.Status < 300 || r.Status >= 400 {
@@ -144,12 +150,26 @@ func (c *Client) Follow(r *Response) *Response {
 	if err != nil {
 		c.t.Fatalf("%s: cannot follow Location %q: %v; assert on Location() instead", r.summary(), location, err)
 	}
+	if target.Scheme != c.base.Scheme || target.Host != c.base.Host {
+		c.t.Fatalf("%s: Location %q leaves %s; assert on Location() instead", r.summary(), location, c.origin)
+	}
 	return c.Get(target.String())
 }
 
-// SetCookie seeds the client's jar with ck for its base URL.
+// SetCookie seeds the client's jar with ck and fails if the jar would not
+// send that name and value to the client's base URL.
 func (c *Client) SetCookie(ck *http.Cookie) {
+	c.t.Helper()
+	if ck == nil {
+		c.t.Fatal("SetCookie: nil cookie")
+	}
 	c.jar.SetCookies(c.base, []*http.Cookie{ck})
+	for _, stored := range c.jar.Cookies(c.base) {
+		if stored.Name == ck.Name && stored.Value == ck.Value {
+			return
+		}
+	}
+	c.t.Fatalf("SetCookie %q: the jar would not send it to %s (check Secure, Domain, Path and expiry)", ck.Name, c.origin)
 }
 
 // Cookie returns the named cookie's value, if the jar would send it to the
@@ -179,6 +199,18 @@ func (tr handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if req.URL.Scheme == "https" {
 		in.TLS = &tls.ConnectionState{
 			Version: tls.VersionTLS12, HandshakeComplete: true, ServerName: in.Host,
+		}
+	}
+	if len(in.TransferEncoding) == 0 {
+		switch {
+		case in.ContentLength > 0 && in.Body != nil && in.Body != http.NoBody:
+			in.Header.Set("Content-Length", strconv.FormatInt(in.ContentLength, 10))
+		case in.ContentLength == 0 && (in.Body == nil || in.Body == http.NoBody):
+			// net/http sends an explicit zero for these empty requests.
+			switch in.Method {
+			case http.MethodPost, http.MethodPut, http.MethodPatch:
+				in.Header.Set("Content-Length", "0")
+			}
 		}
 	}
 	if in.Body == nil {

@@ -7,6 +7,10 @@
 // follows redirects, so tests can assert the literal Location. Use Raw
 // when the standard HTTP reader would reject bytes on the wire.
 //
+// Build a Client inside the test that makes assertions; never share one
+// across t.Run subtests. Assertions report to the testing.TB the client
+// was built with.
+//
 // The probes also check temporary-file leftovers and captured logs. Use
 // literal expectations rather than deriving them from the code under test.
 package webtest

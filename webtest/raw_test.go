@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -72,6 +73,22 @@ func TestRawFailures(t *testing.T) {
 				Raw(t, srv.Listener.Addr().String(), rawGet())
 			}, true, tt.wantMsg)
 		})
+	}
+}
+
+func TestRawRejectsHEAD(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Length", "4")
+	}))
+	t.Cleanup(srv.Close)
+	checkFailure(t, func(tb testing.TB) {
+		Raw(tb, srv.Listener.Addr().String(),
+			strings.NewReader("HEAD / HTTP/1.1\r\nHost: app.example\r\nConnection: close\r\n\r\n"))
+	}, true, "Raw does not support HEAD; use Client.Do instead")
+	if n := requests.Load(); n != 0 {
+		t.Errorf("server received %d requests; want none", n)
 	}
 }
 

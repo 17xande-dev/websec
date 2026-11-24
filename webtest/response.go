@@ -22,7 +22,8 @@ type Response struct {
 }
 
 // Location returns the raw Location header, or "" if absent. It fails the
-// test if the response contains multiple Location values.
+// test if the response contains multiple Location values. In-process
+// handlers should use Header.Set or Header.Add to write the canonical key.
 func (r *Response) Location() string {
 	r.t.Helper()
 	values := r.Header.Values("Location")

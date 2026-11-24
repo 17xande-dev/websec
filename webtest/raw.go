@@ -13,7 +13,9 @@ import (
 )
 
 // Raw sends an entire request verbatim over plain TCP before reading the
-// response. Include "Connection: close" so an EOF-delimited response can end.
+// response. It cannot use a TLS test server and rejects HEAD requests;
+// use Client.Do to inspect a HEAD response.
+// Include "Connection: close" so an EOF-delimited response can end.
 // Raw splits the header lines but does not apply MIME or URL validation.
 // The connection has a 30-second deadline including dial time.
 func Raw(t testing.TB, addr string, req io.Reader) *RawResponse {
@@ -28,7 +30,13 @@ func Raw(t testing.TB, addr string, req io.Reader) *RawResponse {
 	if err := conn.SetDeadline(deadline); err != nil {
 		t.Fatalf("raw request: set deadline: %v", err)
 	}
-	if _, err := io.Copy(conn, req); err != nil {
+	// A HEAD response may advertise a length without sending that body.
+	// Peek only at the method prefix and send the buffered bytes unchanged.
+	out := bufio.NewReaderSize(req, len("HEAD "))
+	if prefix, _ := out.Peek(len("HEAD ")); string(prefix) == "HEAD " {
+		t.Fatal("Raw does not support HEAD; use Client.Do instead")
+	}
+	if _, err := io.Copy(conn, out); err != nil {
 		t.Fatalf("raw request: write: %v", err)
 	}
 
