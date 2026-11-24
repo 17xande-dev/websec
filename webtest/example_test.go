@@ -2,10 +2,32 @@ package webtest_test
 
 import (
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/17xande-dev/websec/webtest"
 )
+
+func TestSweepAndSignInExample(t *testing.T) {
+	const origin = "https://app.example"
+	app := csrfFixture(t, origin, false)
+	fresh := func() *webtest.Client { return webtest.New(t, app, origin) }
+
+	// In an application, take these patterns from route registration.
+	patterns := []string{"GET /admin", "POST /admin/items/{id}/delete"}
+	webtest.Sweep{
+		Routes:    webtest.Routes(t, patterns, map[string]string{"id": "1"}),
+		Min:       2,
+		Client:    fresh,
+		TokenPage: "/login",
+		Refused:   webtest.ByMethod(webtest.RedirectsTo("/login?next="), webtest.Status(http.StatusUnauthorized)),
+	}.Run(t)
+
+	c := fresh()
+	c.SignIn("/login", url.Values{"password": {"fixture-password"}}).
+		WantRedirect(http.StatusSeeOther, "/admin")
+	c.Get("/admin").WantStatus(http.StatusOK)
+}
 
 func TestUploadRefusalExample(t *testing.T) {
 	const secret = "example-upload-key"

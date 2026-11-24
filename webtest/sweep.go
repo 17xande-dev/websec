@@ -88,8 +88,6 @@ type Sweep struct {
 	Form      url.Values                   // extra fields for unsafe requests
 	Cookies   []*http.Cookie               // try each cookie in a separate attempt
 	Refused   func(Route, *Response) error // required app-specific refusal check
-
-	token func(c *Client, path string) string
 }
 
 // Run requests every protected route and returns how many it swept. It
@@ -173,11 +171,7 @@ func (s Sweep) attempt(t testing.TB, route Route, ck *http.Cookie) {
 		fields := make(url.Values, len(s.Form)+1)
 		maps.Copy(fields, s.Form)
 		if s.TokenPage != "" {
-			token := s.token
-			if token == nil {
-				token = (*Client).sweepToken
-			}
-			fields.Set(TokenField, token(c, s.TokenPage))
+			fields.Set(TokenField, c.Page(s.TokenPage).Token())
 		}
 		req := c.NewRequest(route.Method, route.Path, strings.NewReader(fields.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -201,12 +195,6 @@ func (r Route) name() string {
 		return r.Pattern
 	}
 	return r.Method + " " + r.Path
-}
-
-// sweepToken reads the request-forgery token from the page at path.
-func (c *Client) sweepToken(path string) string {
-	c.t.Helper()
-	return c.Page(path).Token()
 }
 
 // RedirectsTo requires a 303 and exactly one raw Location starting with prefix.

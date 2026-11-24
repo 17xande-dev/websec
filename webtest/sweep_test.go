@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -80,10 +81,15 @@ func TestRoutesFailures(t *testing.T) {
 }
 
 func TestSweepUsesDeclaredMethodsAndFreshClients(t *testing.T) {
+	var tokenPages atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
+		tokenPages.Add(1)
+		if _, err := r.Cookie("proof"); err == nil {
+			t.Error("client already carries a token-page cookie")
+		}
 		http.SetCookie(w, &http.Cookie{Name: "proof", Value: "bound", Path: "/"})
-		fmt.Fprint(w, "fixture-token")
+		fmt.Fprint(w, `<input name=csrf_token value=fixture-token>`)
 	})
 	mux.HandleFunc("GET /items", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", "/login?next=/items")
@@ -108,7 +114,7 @@ func TestSweepUsesDeclaredMethodsAndFreshClients(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	form := url.Values{"title": {"sample"}, "csrf_token": {"unchanged"}}
-	var attempts, tokenPages int
+	var attempts int
 	rec := recordFailure(t, func(tb testing.TB) {
 		routes := Routes(tb, []string{"GET /items", "PATCH /items/{id}"}, map[string]string{"id": "1"})
 		s := Sweep{
@@ -122,25 +128,16 @@ func TestSweepUsesDeclaredMethodsAndFreshClients(t *testing.T) {
 			Form:      form,
 			Cookies:   []*http.Cookie{{Name: "session", Value: "made-up"}},
 			Refused:   ByMethod(RedirectsTo("/login?next="), Status(http.StatusUnauthorized)),
-			token: func(c *Client, path string) string {
-				tokenPages++
-				if _, ok := c.Cookie("proof"); ok {
-					tb.Error("client already carries a token-page cookie")
-				}
-				page := c.Get(path)
-				page.WantStatus(http.StatusOK)
-				return page.Body
-			},
 		}
 		if got := s.Run(tb); got != 2 {
 			tb.Errorf("swept %d routes; want 2", got)
 		}
 	})
-	if rec.Failed() || attempts != 4 || tokenPages != 2 ||
+	if rec.Failed() || attempts != 4 || tokenPages.Load() != 2 ||
 		!slices.Equal(rec.logs, []string{`public route "GET /about": public information`}) ||
 		form.Get("csrf_token") != "unchanged" {
 		t.Errorf("failures = %q, attempts = %d, token pages = %d, logs = %q, form token = %q",
-			rec.messages, attempts, tokenPages, rec.logs, form.Get("csrf_token"))
+			rec.messages, attempts, tokenPages.Load(), rec.logs, form.Get("csrf_token"))
 	}
 }
 

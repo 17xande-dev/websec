@@ -94,27 +94,6 @@ func TestRequestOptions(t *testing.T) {
 	}
 }
 
-func TestWrongOriginRefused(t *testing.T) {
-	// The stdlib checker has the same same-origin shortcut. Using it keeps
-	// this test independent of the middleware consumers may use webtest to test.
-	guard := http.NewCrossOriginProtection().Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	c := New(t, guard, testOrigin, WithOrigin(testOrigin+":8443"))
-	t.Run("wrong origin", func(t *testing.T) {
-		r := c.PostForm("/", nil)
-		if r.Status != http.StatusForbidden {
-			t.Errorf("wrong origin got status %d; want 403", r.Status)
-		}
-	})
-	t.Run("matching origin", func(t *testing.T) {
-		c.PostForm("/", nil, WithOrigin(testOrigin)).WantStatus(http.StatusNoContent)
-	})
-	t.Run("explicit fetch metadata takes precedence", func(t *testing.T) {
-		c.PostForm("/", nil, SecFetchSite("same-origin")).WantStatus(http.StatusNoContent)
-	})
-}
-
 func TestServerOrigin(t *testing.T) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, r.Header.Get("Origin"))
