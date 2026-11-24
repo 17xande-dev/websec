@@ -411,9 +411,15 @@ row by the token hash and rewrites creation and last-seen times, plus any
 derived fields such as stored expiry or directory-check timestamps. For a
 SQLite hex-TEXT hash, address the row by the hex digest and write timestamps
 in the store's format. For a Postgres BYTEA hash, use the digest bytes and
-write `timestamptz` values; SQL `now()` stays unchanged. `RawRows` returns
-every stored session column, with text as-is and binary data rendered in hex.
-The result must grow when a session is added.
+write `timestamptz` values; SQL `now()` stays unchanged. Use the application's
+own hash function, or derive it in the test (`sha256.Sum256([]byte(token))`)
+if you want the test to pin the stored format. `RawRows` returns every stored
+session column, with text as-is and binary data rendered in hex. The result
+must grow when a session is added.
+
+If `Lookup` sends the token through your routes as a cookie, set
+`CookieTokens: true`: a Cookie header cannot carry the NUL and newline
+variants, so the suite sends a truncated and an extended token instead.
 
 The fixtures require the store's real absolute limit to be at least ten
 minutes. If idle expiry is enabled, the idle limit must be at least five

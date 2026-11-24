@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"regexp"
@@ -250,6 +252,41 @@ func newReference(l session.Lifetime, mutation, format string) sessiontest.Harne
 	return s.harness()
 }
 
+func cookieReference(mutation string, cookieTokens bool) sessiontest.Harness {
+	h := newReference(session.Default, "", "hex")
+	h.CookieTokens = cookieTokens
+	create, lookup := h.Create, h.Lookup
+	var issued []string
+	h.Create = func(t *testing.T, user string) string {
+		token := create(t, user)
+		issued = append(issued, token)
+		return token
+	}
+	h.Lookup = func(t *testing.T, token string) (user string, ok bool, err error) {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
+		// Exercise the parser, not AddCookie's outgoing sanitization: the
+		// parser drops the NUL value and trims the trailing newline.
+		req.Header.Set("Cookie", "session="+token)
+		http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			c, _ := r.Cookie("session")
+			token := ""
+			if c != nil {
+				token = c.Value
+			}
+			for _, live := range issued {
+				if mutation == "prefix-match" && len(token) == len(live)-1 && strings.HasPrefix(live, token) ||
+					mutation == "ignore-extra-character" && len(token) == len(live)+1 && strings.HasPrefix(token, live) {
+					token = live
+					break
+				}
+			}
+			user, ok, err = lookup(t, token)
+		}).ServeHTTP(httptest.NewRecorder(), req)
+		return user, ok, err
+	}
+	return h
+}
+
 func TestReference(t *testing.T) {
 	for _, format := range []string{"base64url", "padded", "hex", "upper-hex"} {
 		t.Run(format, func(t *testing.T) {
@@ -343,6 +380,12 @@ func TestConformanceChild(t *testing.T) {
 		h = hourlyReference(time.Minute)
 	case "short-hex-token":
 		h = newReference(session.Default, mode, "hex")
+	case "cookie", "cookie-legacy":
+		h = cookieReference("", mode == "cookie")
+	case "cookie-prefix-match", "cookie-prefix-match-legacy",
+		"cookie-ignore-extra-character", "cookie-ignore-extra-character-legacy":
+		mutation := strings.TrimPrefix(strings.TrimSuffix(mode, "-legacy"), "cookie-")
+		h = cookieReference(mutation, !strings.HasSuffix(mode, "-legacy"))
 	}
 	sessiontest.Run(t, h)
 }
@@ -411,6 +454,32 @@ func TestMutations(t *testing.T) {
 			}
 			if !strings.Contains(out, tc.message) {
 				t.Fatalf("missing mutation diagnostic %q:\n%s", tc.message, out)
+			}
+		})
+	}
+}
+
+func TestCookieTokens(t *testing.T) {
+	failedCase := regexp.MustCompile(`(?m)^\s*--- FAIL: TestConformanceChild/(\S+)`)
+	for _, tc := range []struct{ mode, hit string }{
+		{"cookie", ""},
+		{"cookie-legacy", "token with trailing newline"},
+		{"cookie-prefix-match", "token missing its last character"},
+		{"cookie-prefix-match-legacy", "token with trailing newline"},
+		{"cookie-ignore-extra-character", "token with an extra character"},
+		{"cookie-ignore-extra-character-legacy", "token with trailing newline"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			out := runChild(t, tc.mode, tc.hit != "")
+			if tc.hit == "" {
+				return
+			}
+			got := failedCase.FindAllStringSubmatch(out, -1)
+			if len(got) != 1 || got[0][1] != string(sessiontest.CaseMiss) {
+				t.Errorf("want only the miss case to fail:\n%s", out)
+			}
+			if !strings.Contains(out, tc.hit+": Lookup hit = true") || strings.Count(out, "Lookup hit = true") != 1 {
+				t.Errorf("want exactly one unexpected hit, for %q:\n%s", tc.hit, out)
 			}
 		})
 	}

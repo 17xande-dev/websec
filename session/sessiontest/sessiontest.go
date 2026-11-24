@@ -42,6 +42,14 @@ type Harness struct {
 	// without running. The non-blank reason is logged, and the corresponding
 	// callback must be nil.
 	NotApplicable map[Case]string
+
+	// CookieTokens says Lookup delivers the token as a cookie value through
+	// the application's handlers. The miss case then sends only values a
+	// Cookie header carries unchanged: instead of the NUL and trailing-newline
+	// tokens it sends the live token without its last character and with one
+	// extra character. Lookup should call the handler directly (httptest),
+	// not through a network server, which would refuse the 1 MiB token.
+	CookieTokens bool
 }
 
 // Case names a subtest. Only CaseDisable, CasePasswordChange and
@@ -327,12 +335,18 @@ func (h Harness) misses(t *testing.T, now time.Time) {
 	u := h.NewUser(t)
 	live, expired := h.Create(t, u), h.Create(t, u)
 	h.backdateAbsolute(t, expired, now, -m)
+	nulLabel, nulToken := "token with NUL", live+"\x00"
+	newlineLabel, newlineToken := "token with trailing newline", live+"\n"
+	if h.CookieTokens {
+		nulLabel, nulToken = "token missing its last character", live[:max(0, len(live)-1)]
+		newlineLabel, newlineToken = "token with an extra character", live+"a"
+	}
 	for _, tc := range []struct{ label, token string }{
 		{"empty token", ""},
 		{"short token", "x"},
 		{"oversized token", strings.Repeat("a", 1<<20)},
-		{"token with NUL", live + "\x00"},
-		{"token with trailing newline", live + "\n"},
+		{nulLabel, nulToken},
+		{newlineLabel, newlineToken},
 		{"absolute-expired token", expired},
 	} {
 		h.miss(t, tc.label, tc.token)
