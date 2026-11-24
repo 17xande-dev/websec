@@ -1,0 +1,59 @@
+<!doctype html>
+<title>Example forms</title>
+<!-- <input name="csrf_token" value="comment"> -->
+<SCRIPT>const example = '<input name="csrf_token" value="script">';</SCRIPT>
+<template>
+  <template><input name="csrf_token" value="nested"></template>
+  <form action="save"><input name="csrf_token" value="template"></form>
+</template>
+<INPUT value="a&#43;b&#61;" NAME=csrf_token>
+<FORM action='save?from=edit&amp;view=full' METHOD=PoSt>
+  <INPUT value='a&#43;b&#61;' type=hidden NAME=csrf_token>
+  <input type=hidden name=version value="v&amp;1">
+  <input name="title" value="A &amp; B">
+  <input type=date name=date value=2026-10-02>
+  <input name=empty>
+  <input value=nameless>
+  <input name=ignored value=disabled disabled>
+  <input type=checkbox name=check checked>
+  <input type=checkbox name=check value=no>
+  <input type=checkbox name=check value="" checked>
+  <input type=radio name=radio value=yes checked>
+  <input type=radio name=radio value=no>
+  <input type=radio name=defaultRadio checked>
+  <input type=checkbox name=ignored checked disabled>
+  <input type=submit name=ignored value=save>
+  <input type=image name=ignored>
+  <input type=reset name=ignored>
+  <input type=button name=ignored>
+  <input type=file name=ignored>
+  <button name=ignored value=submit>Save</button>
+  <textarea name=note>
+first &lt;input&gt; &#43;
+second</textarea>
+  <textarea name=emptyNote></textarea>
+  <textarea name=ignored disabled>skip</textarea>
+  <select name=one>
+    <option>first
+    <option selected value='x&#43;y'>second
+  </select>
+  <select name=defaultSelect>
+    <option disabled>skip
+    <option> First    &amp; second
+    <option>skip
+  </select>
+  <select name=several multiple>
+    <option selected>one</option>
+    <option selected disabled>skip</option>
+    <optgroup label="Disabled" disabled><option selected>skip</option></optgroup>
+    <optgroup label="Enabled"><option value="" selected>empty</option></optgroup>
+    <option>skip
+  </select>
+  <select name=ignored multiple><option>not selected</option></select>
+  <select name=ignored disabled><option selected>skip</option></select>
+</FORM>
+<input name=outside value=skip>
+<form action=find>
+  <input name="csrf_token" value="a+b=">
+  <input name=q value="some words">
+</form>
