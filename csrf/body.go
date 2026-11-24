@@ -28,7 +28,8 @@ type bodyErrorKey struct{}
 // error; when a read deadline or another network timeout ended the read,
 // errors.Is(err, os.ErrDeadlineExceeded) reports true. Branch on the error
 // with errors.Is or errors.As; do not show or log its text, which can contain
-// parser detail.
+// parser detail and, for a malformed multipart stream, bytes taken from the
+// request body.
 func BodyError(r *http.Request) error {
 	err, _ := r.Context().Value(bodyErrorKey{}).(error)
 	return err

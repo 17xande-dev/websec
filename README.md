@@ -588,7 +588,7 @@ value is the subtest name that `go test` prints.
 
 ## Changes
 
-- **Unreleased**
+- **v0.3.0**
   - `csrf.ValidateOrigin` checks configuration with the same rules as `New`,
     which now also refuses ports with leading zeros and port zero.
   - `csrf.BodyError` exposes the cause inside `OnBodyError`, including
@@ -597,7 +597,9 @@ value is the subtest name that `go test` prints.
   - `csrf.ErrBadToken`, `ErrBadOrigin`, `ErrNoReferer` and `ErrBadReferer` let
     callers check `csrf.Reason` without importing nosurf.
   - `cookie.Config.Now` lets `Set` use the session store's clock to measure
-    remaining lifetime.
+    remaining lifetime. `cookie.Config` and `cookie.Cookie` now contain a
+    function field, so values of those types can no longer be compared with
+    `==` or used as map keys.
   - `sessiontest` reports not-applicable cases as passing without running
     them and logs the reason.
   - `sessiontest.Harness.CookieTokens` substitutes truncated and extended
