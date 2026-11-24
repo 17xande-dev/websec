@@ -224,10 +224,10 @@ OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
    fragment, userinfo or trailing slash. Leave out the scheme's default port
    (`https://host:443` and `http://host:80` fail startup): browsers omit it
    from the `Origin` header, so such an entry could never match. Every
-   `TrustedOrigins` entry has the same format. The origin is always trusted even when a proxy rewrites `Host`;
-   sibling subdomains are not trusted unless listed; and the TLS answer comes
-   from config, not a forwarded header, because a client-supplied header must
-   not change the policy. A value that an older hand-written check silently
+   `TrustedOrigins` entry has the same format. The origin is always trusted
+   even when a proxy rewrites `Host`; sibling subdomains are not trusted unless
+   listed; and the TLS answer comes from config, not a forwarded header,
+   because a client-supplied header must not change the policy. A value that an older hand-written check silently
    never matched (a trailing slash, upper case) now **fails startup**, so
    validate configuration before deploying.
 2. **Duplicates are ignored.** A `TrustedOrigins` entry equal to `Origin` or to
@@ -421,9 +421,18 @@ and touch.
 
 `ChangePassword` returns the token still valid for the current browser:
 the current token, a rotated token, or `""` if all the user's sessions
-ended. Only `disable`, `password-change`, and `revoke-user` can be opted
-out. Leave the callback nil and give a reason in `NotApplicable`; the
-reason is visible in `go test -v`.
+ended. Only `sessiontest.CaseDisable`, `CasePasswordChange` and
+`CaseRevokeUser` can be opted out. Leave the callback nil and give a reason in
+`NotApplicable`; the reason is visible in `go test -v`:
+
+```go
+NotApplicable: map[sessiontest.Case]string{
+	sessiontest.CaseRevokeUser: "accounts are managed by one person",
+},
+```
+
+Every case has a constant (`CaseFresh`, `CaseAbsolute`, `CaseIdle`, ...) whose
+value is the subtest name that `go test` prints.
 
 ## Changes
 
@@ -437,7 +446,12 @@ reason is visible in `go test -v`.
   HTTP/1 413, 415 and 500 where the body was not read. A `TrustedOrigins`
   entry that repeats `Origin` or an earlier entry is ignored instead of failing
   startup; malformed entries still fail. A valid `X-CSRF-Token` on an oversized
-  upload is refused with 403, never handed to the route.
+  upload is refused with 403, never handed to the route. `New` now refuses an
+  `Origin` or `TrustedOrigins` entry that spells out the scheme's default port
+  (`:443` for https, `:80` for http), which browsers omit and which could
+  therefore never match. The hook's `Cache-Control: no-store` is now set before
+  `OnBodyError` runs, as documented. `sessiontest` exports a constant for every
+  case name (`CaseDisable` and so on) for `Harness.NotApplicable`.
 - **v0.1.1**: `FuzzSafeRedirect` is now seeded with the browser-semantics rows
   as well as the general table, plus `/admin/x%2fy`, so a mutant that matches
   `Prefix` against the decoded path is caught from the seed corpus. Tests only;
