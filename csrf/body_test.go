@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -163,6 +164,7 @@ func TestBodyErrorTimeout(t *testing.T) {
 }
 
 func TestBodyErrorOutsideHook(t *testing.T) {
+	refusals := make(chan bodyRefusal, 1)
 	check := func(status int) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if err := csrf.BodyError(r); err != nil {
@@ -173,11 +175,30 @@ func TestBodyErrorOutsideHook(t *testing.T) {
 	}
 	p := mustNew(t, csrf.Config{
 		Origin: ownOrigin, OnFailure: check(http.StatusForbidden), Oversized: check(http.StatusUnprocessableEntity),
+		OnBodyError: observeBodyRefusal(refusals),
 		Limit: func(*http.Request) csrf.BodyLimit {
 			return csrf.BodyLimit{MultipartMaxBytes: 1, PassOversized: func(*http.Request) bool { return true }}
 		},
 	})
 	s, client := server(t, p.Handler(check(http.StatusNoContent)))
+
+	// A malformed form sets a cause without closing the HTTP/1.1 connection
+	// as a 413 or 415 would. The next request must not inherit that cause.
+	req := request(t, http.MethodPost, s.URL, strings.NewReader("field=%zz"))
+	req.Header.Set("Content-Type", urlencoded)
+	req.Header.Set("Origin", ownOrigin)
+	if resp, _ := send(t, client, req); resp.StatusCode != http.StatusBadRequest || resp.Proto != "HTTP/1.1" || resp.Close {
+		t.Fatalf("refusal = %d %s, close=%t; want 400 on a persistent HTTP/1.1 connection", resp.StatusCode, resp.Proto, resp.Close)
+	}
+	select {
+	case got := <-refusals:
+		if got.status != http.StatusBadRequest || got.cause == nil {
+			t.Fatalf("hook got status %d, cause %v; want 400 and a non-nil cause", got.status, got.cause)
+		}
+	default:
+		t.Fatal("OnBodyError did not run")
+	}
+
 	for _, tc := range []struct {
 		name, method string
 		body         io.Reader
@@ -189,12 +210,21 @@ func TestBodyErrorOutsideHook(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := request(t, tc.method, s.URL, tc.body)
+			var reused bool
+			if tc.want == http.StatusNoContent {
+				req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+					GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused },
+				}))
+			}
 			req.Header.Set("Origin", ownOrigin)
 			if tc.body != nil {
 				req.Header.Set("Content-Type", "multipart/form-data; boundary=test-boundary")
 			}
 			if resp, _ := send(t, client, req); resp.StatusCode != tc.want {
 				t.Errorf("status = %d, want %d", resp.StatusCode, tc.want)
+			}
+			if tc.want == http.StatusNoContent && !reused {
+				t.Error("wrapped handler did not reuse the refused request's connection")
 			}
 		})
 	}
