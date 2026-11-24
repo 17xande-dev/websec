@@ -125,7 +125,7 @@ func TestBodyCap(t *testing.T) {
 		{"URL-encoded override", "POST", "/larger", urlencoded, strings.NewReader(atPlusOne), 0, capBytes + 1, 204, false},
 		{"URL-encoded near override", "POST", "/larger/", urlencoded, strings.NewReader(atPlusOne), 0, 0, 413, false},
 		{"malformed URL-encoded form", "POST", "/", urlencoded, strings.NewReader(validPrefix + "%zz"), 0, capBytes, 400, false},
-		{"size check precedes multipart refusal", "POST", "/", multipartType, strings.NewReader(atPlusOne), 0, 0, 413, true},
+		{"multipart refusal precedes the size check", "POST", "/", multipartType, strings.NewReader(atPlusOne), 0, 0, 415, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := request(t, tc.method, s.URL+tc.path, tc.body)
@@ -341,7 +341,7 @@ func TestBodyError(t *testing.T) {
 		s, _ := server(t, mustNew(t, csrf.Config{
 			Origin: ownOrigin, MaxBody: capBytes,
 			Limit: func(*http.Request) csrf.BodyLimit {
-				return csrf.BodyLimit{MaxBytes: capBytes, Multipart: true,
+				return csrf.BodyLimit{MultipartMaxBytes: capBytes,
 					PassOversized: func(*http.Request) bool { return true }}
 			},
 			Oversized: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -412,7 +412,10 @@ func TestBodyErrorHookGetsEmptyBody(t *testing.T) {
 				t.Run(fmt.Sprintf("HTTP/%d %s %s", proto, tc.name, h.name), func(t *testing.T) {
 					tmp := t.TempDir()
 					t.Setenv("TMPDIR", tmp)
+					// The POST row needs a route that allows multipart, so
+					// the refusal under test is the declared-length 413.
 					p := mustNew(t, csrf.Config{Origin: ownOrigin, OnBodyError: h.fn,
+						Limit:  func(*http.Request) csrf.BodyLimit { return csrf.BodyLimit{MultipartMaxBytes: 1 << 20} },
 						Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))})
 					observations := make(chan bodyObservation, 1)
 					s := httptest.NewUnstartedServer(observeBody(func(w http.ResponseWriter, r *http.Request) {
@@ -514,7 +517,7 @@ func TestMultipartCap(t *testing.T) {
 	p := mustNew(t, csrf.Config{
 		Origin: ownOrigin,
 		Limit: func(r *http.Request) csrf.BodyLimit {
-			limit := csrf.BodyLimit{MaxBytes: capBytes, Multipart: true}
+			limit := csrf.BodyLimit{MultipartMaxBytes: capBytes}
 			if r.URL.Path == "/in-memory" {
 				limit.MaxMemory = capBytes
 			}
@@ -612,5 +615,189 @@ func assertTempEntries(t *testing.T, dir string, wantEntries bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil || (len(entries) != 0) != wantEntries {
 		t.Errorf("multipart temp entries=%d, err=%v, want any=%t", len(entries), err, wantEntries)
+	}
+}
+
+// The media type decides the cap: a route with a large multipart cap must not
+// accept a large body of any other type, and the reverse.
+func TestBodyLimitByMediaType(t *testing.T) {
+	const defaultCap = 256 << 10
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	var logs logBuffer
+	p := mustNew(t, csrf.Config{
+		Origin: ownOrigin,
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+		Limit: func(r *http.Request) csrf.BodyLimit {
+			switch r.URL.Path {
+			case "/no-multipart":
+				return csrf.BodyLimit{}
+			case "/medium":
+				return csrf.BodyLimit{MaxBytes: 512 << 10}
+			case "/too-large":
+				return csrf.BodyLimit{MaxBytes: 64<<20 + 1, MultipartMaxBytes: 4 << 20}
+			case "/max-64":
+				return csrf.BodyLimit{MaxBytes: 64 << 20}
+			case "/negative":
+				return csrf.BodyLimit{MaxBytes: -1, MultipartMaxBytes: -1, MaxMemory: -1}
+			case "/clamped":
+				return csrf.BodyLimit{MultipartMaxBytes: 1 << 20, MaxMemory: 8 << 20}
+			}
+			return csrf.BodyLimit{MultipartMaxBytes: 4 << 20}
+		},
+	})
+	observations := make(chan bodyObservation, 1)
+	s, client := server(t, observeBody(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, csrf.Token(r))
+			return
+		}
+		// A 1 MiB upload must stay in memory when MaxMemory is clamped to it.
+		if r.URL.Path == "/clamped" {
+			assertTempEntries(t, tmp, false)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}, p, observations))
+	token, _ := formToken(t, s, client, "/")
+	<-observations
+	prefix := url.Values{csrf.FieldName: {token}}.Encode() + "&field="
+	for _, tc := range []struct {
+		name, path, mediaType string
+		size                  int // body bytes; multipart when mediaType is empty
+		maxRead               int64
+		status                int
+		streamed              bool
+		header                bool // token in a header, so the body type does not matter
+	}{
+		{"declared URL-encoded cap plus one", "/upload", urlencoded, defaultCap + 1, 0, 413, false, false},
+		{"streamed 8 MiB URL-encoded", "/upload", urlencoded, 8 << 20, defaultCap + 64<<10, 413, true, false},
+		{"declared 1 MiB JSON", "/upload", "application/json", 1 << 20, 0, 413, false, true},
+		{"declared 1 MiB text", "/upload", "text/plain", 1 << 20, 0, 413, false, true},
+		{"multipart at exactly the cap", "/upload", "", 4 << 20, 4 << 20, 204, false, false},
+		{"multipart 5 MiB declared", "/upload", "", 5 << 20, 0, 413, false, false},
+		{"multipart refused when the cap is 0", "/no-multipart", "", 1 << 10, 0, 415, false, false},
+		{"multipart refused when the cap is negative", "/negative", "", 1 << 10, 0, 415, false, false},
+		{"malformed multipart type refused when the cap is 0", "/no-multipart", "multipart/form-data;;", 1 << 10, 0, 415, false, false},
+		{"URL-encoded within a larger MaxBytes", "/medium", urlencoded, 300 << 10, 300 << 10, 204, false, false},
+		{"URL-encoded over a larger MaxBytes", "/medium", urlencoded, 512<<10 + 1, 0, 413, false, false},
+		{"multipart ignores MaxBytes", "/medium", "", 1 << 10, 0, 415, false, false},
+		{"MaxBytes of exactly 64 MiB", "/max-64", urlencoded, 1 << 10, 1 << 10, 204, false, false},
+		{"MaxBytes above 64 MiB", "/too-large", urlencoded, 1 << 10, 0, 500, false, false},
+		{"MaxBytes above 64 MiB for multipart", "/too-large", "", 1 << 10, 0, 500, false, false},
+		{"negative values act as 0", "/negative", urlencoded, defaultCap + 1, 0, 413, false, false},
+		{"MaxMemory above the multipart cap", "/clamped", "", 1 << 20, 1 << 20, 204, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs.mu.Lock()
+			logs.buf.Reset()
+			logs.mu.Unlock()
+			mediaType := tc.mediaType
+			var reader io.Reader
+			switch {
+			case mediaType == "":
+				var body []byte
+				body, mediaType = multipartBody(t, token, tc.size)
+				reader = bytes.NewReader(body)
+			case tc.header:
+				reader = strings.NewReader(strings.Repeat("x", tc.size))
+			case tc.streamed:
+				reader = streamed{io.MultiReader(strings.NewReader(prefix), io.LimitReader(repeatedByte('x'), int64(tc.size-len(prefix))))}
+			default:
+				reader = strings.NewReader(prefix + strings.Repeat("x", max(tc.size-len(prefix), 0)))
+			}
+			req := request(t, "POST", s.URL+tc.path, reader)
+			req.Header.Set("Content-Type", mediaType)
+			req.Header.Set("Origin", ownOrigin)
+			if tc.header {
+				req.Header.Set(csrf.HeaderName, token)
+			}
+			resp, _ := send(t, client, req)
+			obs := <-observations
+			if resp.StatusCode != tc.status || obs.next != (tc.status == 204) || obs.read > tc.maxRead {
+				t.Errorf("status=%d, next=%t, bytes read=%d; want status=%d and at most %d read",
+					resp.StatusCode, obs.next, obs.read, tc.status, tc.maxRead)
+			}
+			if tc.status == 500 {
+				var record map[string]any
+				raw := strings.TrimSpace(logs.String())
+				if json.Unmarshal([]byte(raw), &record) != nil || record["level"] != "ERROR" ||
+					record["msg"] != "csrf: Limit returned MaxBytes above 64 MiB" || record["path"] != tc.path {
+					t.Errorf("want one error log with the path; got %q", raw)
+				}
+				if !resp.Close || resp.Header.Get("Cache-Control") != "no-store" {
+					t.Errorf("500 must close the connection and not be cacheable")
+				}
+			}
+			assertTempEntries(t, tmp, false)
+		})
+	}
+}
+
+// The 64 MiB bound is a bug in the application, so the error hook (meant for
+// request refusals) is not consulted.
+func TestBodyLimitAboveBoundSkipsHook(t *testing.T) {
+	called := false
+	p := mustNew(t, csrf.Config{
+		Origin:      ownOrigin,
+		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		Limit:       func(*http.Request) csrf.BodyLimit { return csrf.BodyLimit{MaxBytes: 64<<20 + 1} },
+		OnBodyError: func(http.ResponseWriter, *http.Request, int) { called = true },
+	})
+	s, _ := server(t, p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("next called")
+	})))
+	req := request(t, "POST", s.URL, strings.NewReader("a=b"))
+	req.Header.Set("Content-Type", urlencoded)
+	if resp, _ := send(t, s.Client(), req); resp.StatusCode != 500 || called {
+		t.Errorf("status=%d, hook called=%t; want 500 and no hook", resp.StatusCode, called)
+	}
+}
+
+// The connection is closed after every 413, 415 and 500 on which the body was
+// not read, so the server does not drain it to reuse the connection.
+func TestBodyErrorClosesConnection(t *testing.T) {
+	const multipartType = "multipart/form-data; boundary=test-boundary"
+	limit := func(r *http.Request) csrf.BodyLimit {
+		switch r.URL.Path {
+		case "/upload":
+			return csrf.BodyLimit{MultipartMaxBytes: 1 << 10}
+		case "/broken":
+			return csrf.BodyLimit{MaxBytes: 64<<20 + 1}
+		}
+		return csrf.BodyLimit{}
+	}
+	// Small enough for net/http to drain and reuse the connection on its own.
+	big := strings.Repeat("x", 2<<10)
+	for _, hook := range []bool{false, true} {
+		conf := csrf.Config{Origin: ownOrigin, MaxBody: 1 << 10, Limit: limit, Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))}
+		if hook {
+			conf.OnBodyError = func(w http.ResponseWriter, r *http.Request, status int) { w.WriteHeader(status) }
+		}
+		s, _ := server(t, mustNew(t, conf).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})))
+		for _, tc := range []struct {
+			name, method, path, mediaType, body string
+			status                              int
+		}{
+			{"declared 413", "POST", "/form", urlencoded, big, 413},
+			{"declared multipart 413", "POST", "/upload", multipartType, big, 413},
+			{"multipart 415", "POST", "/form", multipartType, "x", 415},
+			{"safe method multipart 415", "GET", "/form", multipartType, "x", 415},
+			{"Limit bound 500", "POST", "/broken", urlencoded, "a=b", 500},
+		} {
+			t.Run(fmt.Sprintf("hook=%t/%s", hook, tc.name), func(t *testing.T) {
+				req := request(t, tc.method, s.URL+tc.path, strings.NewReader(tc.body))
+				req.Header.Set("Content-Type", tc.mediaType)
+				req.Header.Set("Origin", ownOrigin)
+				resp, _ := send(t, s.Client(), req)
+				// net/http hides the Connection header from the client; Close is
+				// the visible effect.
+				if resp.StatusCode != tc.status || resp.ProtoMajor != 1 || !resp.Close {
+					t.Errorf("status=%d, HTTP/%d, close=%t; want %d, HTTP/1 and a closed connection",
+						resp.StatusCode, resp.ProtoMajor, resp.Close, tc.status)
+				}
+			})
+		}
 	}
 }

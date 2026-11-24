@@ -177,9 +177,11 @@ The wrapper applies these rules in order:
    Non-exempt safe requests still skip the token check and go through nosurf
    so a form page can issue a token.
 2. On unsafe methods, resolve the limit (`MaxBody` defaults to 256 KiB, and `Limit`
-   can override it). An oversized declared length returns 413 unless the
-   upload opts into a custom refusal (see below). Multipart data returns 415
-   unless the limit allows it. Otherwise wrap the body in `http.MaxBytesReader`.
+   can override it) and decide the media type first. Multipart is capped by
+   `MultipartMaxBytes` and refused with 415 when that is 0; every other body is
+   capped by `MaxBytes` (0 means `MaxBody`, at most 64 MiB). An oversized
+   declared length returns 413 unless the upload opts into a custom refusal
+   (see below). Otherwise wrap the body in `http.MaxBytesReader`.
 3. Exempt requests skip nosurf entirely, so they get no CSRF cookie and their
    handlers receive an unparsed body. Exempt routes must authenticate themselves
    and handle read errors, including `*http.MaxBytesError` on streamed bodies.
@@ -243,7 +245,7 @@ credential change. On exempt or unprotected requests it returns
 ### Custom refusal for oversized uploads
 
 To show a friendly error on an upload route, have `Limit` return a `BodyLimit`
-with `Multipart: true` and a `PassOversized` callback. The callback must check
+with `MultipartMaxBytes` set and a `PassOversized` callback. The callback must check
 the session and upload permission without reading the body. Set
 `Config.Oversized` to a handler that only renders the refusal (for example,
 a 422 page with the size limit). `csrf.Oversized(r)` identifies the marked

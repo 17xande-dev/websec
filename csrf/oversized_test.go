@@ -29,9 +29,9 @@ func TestOversizedUpload(t *testing.T) {
 		Origin: ownOrigin,
 		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
 		Limit: func(r *http.Request) csrf.BodyLimit {
-			limit := csrf.BodyLimit{MaxBytes: capBytes, Multipart: true, MaxMemory: 1024}
+			limit := csrf.BodyLimit{MultipartMaxBytes: capBytes, MaxMemory: 1024}
 			if r.Pattern == "POST /no-multipart" {
-				limit.Multipart = false
+				limit.MultipartMaxBytes = 0
 			}
 			switch r.Pattern {
 			case "POST /upload", "POST /exempt", "POST /no-renderer", "POST /no-multipart", "POST /preparsed":
@@ -125,7 +125,7 @@ func TestOversizedUpload(t *testing.T) {
 		{name: "valid header token", session: "uploader", headerToken: token, status: 403, wantText: "Forbidden\n", wantWarn: "oversized request with a header token", close: true},
 		{name: "ordinary route", path: "/ordinary", session: "uploader", status: 413, wantText: refused},
 		{name: "exempt route", path: "/exempt", session: "uploader", status: 413, wantText: refused},
-		{name: "multipart not allowed on route", path: "/no-multipart", session: "uploader", status: 413, wantText: refused},
+		{name: "multipart not allowed on route", path: "/no-multipart", session: "uploader", status: 415, wantText: "Unsupported Media Type\n"},
 		{name: "outer layer parsed the form", path: "/preparsed", session: "uploader", status: 422, wantText: friendly, close: true},
 		{name: "missing renderer", path: "/no-renderer", session: "uploader", status: 413, wantText: refused},
 		{name: "not multipart", session: "uploader", nonMultipart: true, status: 413, wantText: refused},

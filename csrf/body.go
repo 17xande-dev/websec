@@ -9,17 +9,33 @@ import (
 	"strings"
 )
 
-// BodyLimit controls the cap and multipart policy for an unsafe request.
+// BodyLimit controls the size caps and multipart policy for an unsafe request.
+// The request's media type picks the cap: MaxBytes never applies to multipart,
+// and MultipartMaxBytes never applies to anything else. A route with a very
+// large upload cap therefore cannot be used to send a very large form, JSON
+// or text body.
 type BodyLimit struct {
-	MaxBytes  int64 // 0 means Config.MaxBody
-	Multipart bool  // accept multipart/form-data
-	MaxMemory int64 // 0 means min(MaxBytes, 1 MiB); file parts may spool above it
+	// MaxBytes caps every non-multipart body. 0 means Config.MaxBody; more
+	// than 64 MiB is a programming error (a non-multipart body is parsed in
+	// memory) and the request gets 500 without reading anything.
+	MaxBytes int64
+	// MultipartMaxBytes allows multipart/form-data up to this many bytes. 0
+	// refuses multipart with 415. There is no upper bound.
+	MultipartMaxBytes int64
+	// MaxMemory is the multipart parse memory; file parts may spool to disk
+	// above it. 0 means min(MultipartMaxBytes, 1 MiB); a larger value is
+	// clamped to MultipartMaxBytes.
+	MaxMemory int64
 
 	// PassOversized opts a permitted request into the friendly refusal for
-	// declared oversized multipart uploads. Check session and upload
-	// permission without reading the body. Requires Config.Oversized.
+	// multipart uploads whose declared length exceeds MultipartMaxBytes.
+	// Check session and upload permission without reading the body. Requires
+	// Config.Oversized.
 	PassOversized func(*http.Request) bool
 }
+
+// maxBodyBound is the largest cap for a body that is parsed in memory.
+const maxBodyBound = 64 << 20
 
 type oversizedKey struct{}
 
@@ -49,33 +65,38 @@ func (p *Protect) limitBody(next, check http.Handler) http.Handler {
 		}
 
 		limit := p.bodyLimit(r)
-		if r.ContentLength > limit.MaxBytes {
-			if p.oversized != nil && limit.Multipart && limit.PassOversized != nil {
-				mediaType, _ := requestMediaType(r)
-				if mediaType == "multipart/form-data" && !p.isExempt(r) && limit.PassOversized(r) {
-					if r.ProtoMajor == 1 {
-						// Don't drain the body to reuse this HTTP/1 connection.
-						w.Header().Set("Connection", "close")
-					}
-					r = r.WithContext(context.WithValue(r.Context(), oversizedKey{}, true))
-					// Let nosurf check the origin without seeing any upload data,
-					// even if an outer handler populated the parsed form fields.
-					r.Body = http.NoBody
-					r.Form, r.PostForm, r.MultipartForm = nil, nil, nil
-					check.ServeHTTP(w, r)
-					return
-				}
+		if limit.MaxBytes > maxBodyBound {
+			p.limitError(w, r)
+			return
+		}
+		// Decide the media type first: every later check uses its cap.
+		mediaType, mediaErr := requestMediaType(r)
+		capBytes := limit.MaxBytes
+		multipart := mediaType == "multipart/form-data"
+		if multipart {
+			if limit.MultipartMaxBytes <= 0 {
+				p.bodyError(w, r, http.StatusUnsupportedMediaType)
+				return
+			}
+			capBytes = limit.MultipartMaxBytes
+		}
+		if r.ContentLength > capBytes {
+			if p.oversized != nil && multipart && limit.PassOversized != nil &&
+				!p.isExempt(r) && limit.PassOversized(r) {
+				closeConnection(w, r)
+				r = r.WithContext(context.WithValue(r.Context(), oversizedKey{}, true))
+				// Let nosurf check the origin without seeing any upload data,
+				// even if an outer handler populated the parsed form fields.
+				r.Body = http.NoBody
+				r.Form, r.PostForm, r.MultipartForm = nil, nil, nil
+				check.ServeHTTP(w, r)
+				return
 			}
 			p.bodyError(w, r, http.StatusRequestEntityTooLarge)
 			return
 		}
-		mediaType, mediaErr := requestMediaType(r)
-		if mediaType == "multipart/form-data" && !limit.Multipart {
-			p.bodyError(w, r, http.StatusUnsupportedMediaType)
-			return
-		}
 
-		r.Body = http.MaxBytesReader(w, r.Body, limit.MaxBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, capBytes)
 		if p.isExempt(r) {
 			next.ServeHTTP(w, r)
 			return
@@ -125,9 +146,11 @@ func (p *Protect) bodyLimit(r *http.Request) BodyLimit {
 	if limit.MaxBytes <= 0 {
 		limit.MaxBytes = p.maxBody
 	}
+	limit.MultipartMaxBytes = max(limit.MultipartMaxBytes, 0)
 	if limit.MaxMemory <= 0 {
-		limit.MaxMemory = min(limit.MaxBytes, 1<<20)
+		limit.MaxMemory = 1 << 20
 	}
+	limit.MaxMemory = min(limit.MaxMemory, limit.MultipartMaxBytes)
 	return limit
 }
 
@@ -158,12 +181,17 @@ func requestMediaType(r *http.Request) (string, error) {
 // The warning is logged whether or not OnBodyError replaces the response, and
 // never includes a request value other than the path (no query, no headers).
 //
+// Every 413 and 415 sets Connection: close on HTTP/1 before the hook runs.
+//
 // The refused body is still attached on the declared-length 413 and the 415
 // paths. It is replaced with an empty one first, so a hook that calls
 // Request.FormValue or ParseMultipartForm reads and spools nothing.
 func (p *Protect) bodyError(w http.ResponseWriter, r *http.Request, status int) {
 	r.Body = http.NoBody
 	r.Form, r.PostForm, r.MultipartForm = nil, nil, nil
+	if status != http.StatusBadRequest {
+		closeConnection(w, r)
+	}
 	p.logger.WarnContext(r.Context(), "csrf: request body refused",
 		"status", status, "method", r.Method, "path", r.URL.Path)
 	if p.onBodyErr != nil {
@@ -172,4 +200,24 @@ func (p *Protect) bodyError(w http.ResponseWriter, r *http.Request, status int) 
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	http.Error(w, http.StatusText(status), status)
+}
+
+// limitError answers 500 when a Limit function returns a MaxBytes that no
+// non-multipart body may have. It is a bug in the application, not in the
+// request, so it is logged as an error and OnBodyError is not consulted.
+func (p *Protect) limitError(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.NoBody
+	r.Form, r.PostForm, r.MultipartForm = nil, nil, nil
+	closeConnection(w, r)
+	p.logger.ErrorContext(r.Context(), "csrf: Limit returned MaxBytes above 64 MiB", "path", r.URL.Path)
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+}
+
+// closeConnection stops an HTTP/1 server from draining a refused body to
+// reuse the connection. HTTP/2 resets the stream instead.
+func closeConnection(w http.ResponseWriter, r *http.Request) {
+	if r.ProtoMajor == 1 {
+		w.Header().Set("Connection", "close")
+	}
 }

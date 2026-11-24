@@ -39,7 +39,7 @@ type Config struct {
 	Exempt func(*http.Request) bool // exempt requests skip nosurf, not the body limit
 
 	MaxBody int64                         // default cap; 0 means 256 KiB
-	Limit   func(*http.Request) BodyLimit // per-request override; nil disallows multipart
+	Limit   func(*http.Request) BodyLimit // per-request override; nil caps everything at MaxBody and refuses multipart
 
 	// Oversized renders a refusal for opted-in uploads that pass the origin
 	// check but have no header token. It must not perform the upload or any
@@ -51,7 +51,8 @@ type Config struct {
 	// refusals: 413 (too large), 415 (multipart not allowed) and 400
 	// (malformed body). It does not replace the warning. The hook receives an
 	// empty body and no parsed form fields; the query string stays readable.
-	// It is not called for token failures (see OnFailure) or for the
+	// The kit sets Connection: close on HTTP/1 for a 413 or 415 before the
+	// hook runs. It is not called for token failures (see OnFailure) or for the
 	// oversized-upload hand-off (see Oversized).
 	OnBodyError func(w http.ResponseWriter, r *http.Request, status int)
 	Logger      *slog.Logger // nil means slog.Default()
