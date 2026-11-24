@@ -14,7 +14,7 @@ import "github.com/17xande-dev/websec"
 | `websec/csrf` | Request-forgery protection with bounded form parsing |
 | `websec/cookie` | Host-only session cookies |
 | `websec/session` | Server-side session lifetime and last-seen write policy |
-| `websec/session/sessiontest` | Conformance tests for an application's session store |
+| `websec/session/sessiontest` | Session store conformance tests |
 
 ## SafeRedirect
 
@@ -81,9 +81,9 @@ In order, each step refuses to the fallback:
 6. `Prefix` is set and the raw path does not begin with it;
 7. a `Deny` entry is a prefix of the decoded path.
 
-Query strings, fragments, inner spaces and non-ASCII text are allowed: none of them
-can change the host. `/..%2f..%2fetc` is accepted, because to a browser it is a
-single ordinary segment.
+Query strings, fragments, inner spaces and non-ASCII text are allowed: none
+of them can change the host. `/..%2f..%2fetc` is accepted, because to a browser
+it is a single ordinary segment.
 
 ### Behaviour notes
 
@@ -135,10 +135,10 @@ w.Write(websec.CSVRow(record...)) // a new slice; record is not modified
 import "github.com/17xande-dev/websec/cookie"
 ```
 
-Build the policy once at startup with `cookie.New(cookie.Config{Name: "session"})`.
-Pass a bare name and a path (`""` means `/`). `New` rejects invalid names and
-paths. Use `Set` after sign-in, `Value` to read the credential, and `Clear` at
-sign-out.
+Build the policy once at startup with
+`cookie.New(cookie.Config{Name: "session"})`. Pass a bare name and a path
+(`""` means `/`). `New` rejects invalid names and paths. Use `Set` after
+sign-in, `Value` to read the credential, and `Clear` at sign-out.
 
 - Secure cookies at `/` get `__Host-`, which prevents a sibling subdomain
   (including one hosted by a third party) from setting a domain cookie with
@@ -166,9 +166,10 @@ sign-out.
 import "github.com/17xande-dev/websec/csrf"
 ```
 
-Build a policy at startup with `csrf.New(csrf.Config{Origin: "https://app.example"})`
-and wrap handlers with `p.Handler`. Render `csrf.Token(r)` in the `csrf.FieldName`
-hidden field or send it in the `csrf.HeaderName` request header.
+Build a policy at startup with
+`csrf.New(csrf.Config{Origin: "https://app.example"})` and wrap handlers with
+`p.Handler`. Render `csrf.Token(r)` in the `csrf.FieldName` hidden field or
+send it in the `csrf.HeaderName` request header.
 
 Nosurf parses forms to find the token. Without a cap in front, an anonymous
 request could make the server read and spool a large body before authentication.
@@ -182,12 +183,12 @@ The wrapper applies these rules in order:
    does not read the body, and handler reads are capped at `MaxBody`.
    Non-exempt safe requests still skip the token check and go through nosurf
    so a form page can issue a token.
-2. On unsafe methods, resolve the limit (`MaxBody` defaults to 256 KiB, and `Limit`
-   can override it) and decide the media type first. Multipart is capped by
-   `MultipartMaxBytes` and refused with 415 when that is 0; every other body is
-   capped by `MaxBytes` (0 means `MaxBody`, at most 64 MiB). An oversized
-   declared length returns 413 unless the upload opts into a custom refusal
-   (see below). Otherwise wrap the body in `http.MaxBytesReader`.
+2. On unsafe methods, resolve the limit (`MaxBody` defaults to 256 KiB, and
+   `Limit` can override it) and decide the media type first. Multipart is
+   capped by `MultipartMaxBytes` and refused with 415 when that is 0; every
+   other body is capped by `MaxBytes` (0 means `MaxBody`, at most 64 MiB).
+   An oversized declared length returns 413 unless the upload opts into a
+   custom refusal (see below). Otherwise wrap the body in `http.MaxBytesReader`.
 3. Exempt requests skip nosurf entirely, so they get no CSRF cookie and their
    handlers receive an unparsed body. Exempt routes must authenticate themselves
    and handle read errors, including `*http.MaxBytesError` on streamed bodies.
@@ -198,7 +199,8 @@ The wrapper applies these rules in order:
 
 The kit's own refusals (413, 415 and 400) log one warning with the status,
 method and path (never the query, headers or body; the path is logged as is
-unless `LogPath` is set) and answer in plain text with `Cache-Control: no-store`.
+unless `LogPath` is set) and answer in plain text with
+`Cache-Control: no-store`.
 If your paths carry credentials (one-time sign-in or reset links), set
 `LogPath` to return a redacted path or the mux pattern. With the mux
 initialized as shown below, for example:
@@ -275,9 +277,9 @@ the hook's request body: it is empty.
 ### Adoption checklist
 
 1. **The origin is required.** `New` fails without `Origin`. Use lowercase
-   `https://app.example[:port]` (or `http://` only with `Insecure`): no path, query,
-   fragment, userinfo or trailing slash. Leave out the scheme's default port
-   and write any other port as browsers do, without leading zeros
+   `https://app.example[:port]` (or `http://` only with `Insecure`): no path,
+   query, fragment, userinfo or trailing slash. Leave out the scheme's default
+   port and write any other port as browsers do, without leading zeros
    (`https://app.example:443`, `https://app.example:0443` and
    `https://app.example:0` fail startup). Browsers omit default ports and
    normalize leading zeros; the policy also disallows port zero.
@@ -287,9 +289,10 @@ the hook's request body: it is empty.
    `TrustedOrigins` entry has the same format. The origin is always trusted
    even when a proxy rewrites `Host`; sibling subdomains are not trusted unless
    listed; and the TLS answer comes from config, not a forwarded header,
-   because a client-supplied header must not change the policy. A value that an older hand-written check silently
-   never matched (a trailing slash, upper case) now **fails startup**, so
-   validate configuration before deploying.
+   because a client-supplied header must not change the policy. A value that
+   an older hand-written check silently never matched (a trailing slash,
+   upper case) now **fails startup**, so validate configuration before
+   deploying.
 
    Nosurf accepts `Sec-Fetch-Site: same-origin` without comparing `Origin`.
    Browsers set that header themselves; page scripts cannot set it, and
@@ -365,10 +368,10 @@ the hook's request body: it is empty.
 
 Cookies are host-only, HttpOnly, Secure by default, and last for the browser
 session. They are SameSite=Lax unless `CrossSite` is set for a credentialed
-cross-site embed; that option requires Secure. The name is prefixed with `__Host-`
-at `/` or `__Secure-` on a narrower path, reducing cookie injection. Plain-HTTP
-development explicitly sets `Insecure` and uses the bare name. Adopting the
-prefixed name makes forms opened before the change expire once.
+cross-site embed; that option requires Secure. The name is prefixed with
+`__Host-` at `/` or `__Secure-` on a narrower path, reducing cookie injection.
+Plain-HTTP development explicitly sets `Insecure` and uses the bare name.
+Adopting the prefixed name makes forms opened before the change expire once.
 
 Failed CSRF checks log a warning and return a plain-text 403 with
 `Cache-Control: no-store`. For `HX-Request: true` the response also sets
@@ -442,8 +445,8 @@ func protectUploads(mux *http.ServeMux, sessions *cookie.Cookie,
 ### Custom refusal for oversized uploads
 
 To show a friendly error on an upload route, have `Limit` return a `BodyLimit`
-with `MultipartMaxBytes` set and a `PassOversized` callback. The callback must check
-the session and upload permission without reading the body. Set
+with `MultipartMaxBytes` set and a `PassOversized` callback. The callback
+must check the session and upload permission without reading the body. Set
 `Config.Oversized` to a handler that only renders the refusal (for example,
 a 422 page with the size limit). `csrf.Oversized(r)` identifies the marked
 request and does not attest that its CSRF token was checked.
@@ -455,10 +458,11 @@ custom handler runs only if the origin check passed and the missing form token
 is the only CSRF failure, with no `X-CSRF-Token` header present. It must not
 upload anything or change state. Untrusted origins and requests with a CSRF
 header are refused. Anonymous or unpermitted callers, exempt routes, and
-routes without the opt-in keep the plain 413. A request that sends `X-CSRF-Token` is refused with 403 even if the token is
-valid: the friendly refusal is for browser forms, whose token travels in the
-discarded body, and a valid token must never deliver a discarded body to a
-route. This refusal after a successful token check is logged. `OnFailure`
+routes without the opt-in keep the plain 413. A request that sends
+`X-CSRF-Token` is refused with 403 even if the token is valid: the friendly
+refusal is for browser forms, whose token travels in the discarded body, and
+a valid token must never deliver a discarded body to a route. This refusal
+after a successful token check is logged. `OnFailure`
 is not called for it; a failed origin or token check still goes through
 `OnFailure`. Streamed uploads that exceed the cap still get 413 after a
 bounded read; uploads at or below the cap still need a valid token.
@@ -584,22 +588,33 @@ value is the subtest name that `go test` prints.
 
 ## Changes
 
-- **v0.2.0 (unreleased)**: Session cookie helpers, session lifetime policy,
-  store conformance tests, and CSRF protection with bounded form parsing and
-  opt-in oversized-upload responses, a body cap and multipart refusal on safe
-  methods, and an `OnBodyError` hook. `BodyLimit` caps by media type:
-  `MaxBytes` for every non-multipart body (at most 64 MiB, else 500) and
-  `MultipartMaxBytes` for multipart (0 refuses it with 415), so a large upload
-  cap cannot admit a large form body. The kit sets `Connection: close` on every
-  HTTP/1 413, 415 and 500 where the body was not read. A `TrustedOrigins`
-  entry that repeats `Origin` or an earlier entry is ignored instead of failing
-  startup; malformed entries still fail. A valid `X-CSRF-Token` on an oversized
-  upload is refused with 403, never handed to the route. `New` now refuses an
-  `Origin` or `TrustedOrigins` entry that spells out the scheme's default port
-  (`:443` for https, `:80` for http), which browsers omit and which could
-  therefore never match. The hook's `Cache-Control: no-store` is now set before
-  `OnBodyError` runs, as documented. `sessiontest` exports a constant for every
-  case name (`CaseDisable` and so on) for `Harness.NotApplicable`.
+- **Unreleased**
+  - `csrf.ValidateOrigin` checks configuration with the same rules as `New`,
+    which now also refuses ports with leading zeros and port zero.
+  - `csrf.BodyError` exposes the cause inside `OnBodyError`, including
+    `ErrBodyTooLarge` for 413 and `ErrMultipartRefused` for 415.
+  - `csrf.Config.LogPath` lets callers log a redacted path or mux pattern.
+  - `csrf.ErrBadToken`, `ErrBadOrigin`, `ErrNoReferer` and `ErrBadReferer` let
+    callers check `csrf.Reason` without importing nosurf.
+  - `cookie.Config.Now` lets `Set` use the session store's clock to measure
+    remaining lifetime.
+  - `sessiontest` reports not-applicable cases as passing without running
+    them and logs the reason.
+  - `sessiontest.Harness.CookieTokens` substitutes truncated and extended
+    tokens for the NUL and trailing-newline variants in the `miss` case.
+- **v0.2.0**: Adds session cookie helpers, session lifetime policy, session
+  store conformance tests and CSRF protection with bounded form parsing.
+  Safe methods have a body cap and refuse multipart; on unsafe methods,
+  `BodyLimit` separates `MaxBytes` (at most 64 MiB) from `MultipartMaxBytes`
+  (0 refuses multipart). Oversized uploads can opt into a custom refusal,
+  but even a valid `X-CSRF-Token` cannot send a discarded body to the route.
+  Body refusals can be customized with `OnBodyError`, and
+  `Cache-Control: no-store` is set before `OnBodyError` runs. HTTP/1 body
+  refusals with 413 or 415, and a 500 due to an invalid `Limit`, set
+  `Connection: close`. Origins that spell out the default port are refused;
+  duplicate trusted origins are ignored, but malformed entries still fail
+  startup. `sessiontest` exports constants for its case names, including
+  those that can be listed in `Harness.NotApplicable`.
 - **v0.1.1**: `FuzzSafeRedirect` is now seeded with the browser-semantics rows
   as well as the general table, plus `/admin/x%2fy`, so a mutant that matches
   `Prefix` against the decoded path is caught from the seed corpus. Tests only;
