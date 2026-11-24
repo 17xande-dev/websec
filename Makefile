@@ -14,3 +14,4 @@ vulncheck:
 
 fuzz:
 	go test -run '^$$' -fuzz FuzzSafeRedirect -fuzztime 60s .
+	go test -run '^$$' -fuzz FuzzValidateOrigin -fuzztime 30s ./csrf

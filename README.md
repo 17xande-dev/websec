@@ -220,10 +220,14 @@ OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
 ### Adoption checklist
 
 1. **The origin is required.** `New` fails without `Origin`. Use lowercase
-   `https://host[:port]` (or `http://` only with `Insecure`): no path, query,
+   `https://app.example[:port]` (or `http://` only with `Insecure`): no path, query,
    fragment, userinfo or trailing slash. Leave out the scheme's default port
-   (`https://host:443` and `http://host:80` fail startup): browsers omit it
-   from the `Origin` header, so such an entry could never match. Every
+   and write any other port as browsers do, without leading zeros
+   (`https://app.example:443`, `https://app.example:0443` and
+   `https://app.example:0` fail startup): such an entry could never match.
+   To check a configured value before anything else starts (for example,
+   before migrations), call `csrf.ValidateOrigin(value, insecure)`; `New`
+   applies exactly the same rules. Every
    `TrustedOrigins` entry has the same format. The origin is always trusted
    even when a proxy rewrites `Host`; sibling subdomains are not trusted unless
    listed; and the TLS answer comes from config, not a forwarded header,
