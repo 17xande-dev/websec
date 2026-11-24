@@ -157,8 +157,8 @@ sign-in, `Value` to read the credential, and `Clear` at sign-out.
   store uses. Re-sending the cookie on activity with the same
   `AbsoluteExpiry(created)` keeps its deadline; it never extends the session.
   For directory-backed sign-in that should not persist past the browser session,
-   set `BrowserSession` to omit both attributes. The server still enforces the
-   session's expiry.
+  set `BrowserSession` to omit both attributes. The server still enforces the
+  session's expiry.
 
 The policy reads `cookie.Config.Now` once at construction; if the application
 can swap its clock later (for example, in tests), pass a closure that reads
@@ -212,17 +212,24 @@ method and path (never the query, headers or body; the path is logged as is
 unless `LogPath` is set) and answer in plain text with
 `Cache-Control: no-store`.
 If your paths carry credentials (one-time sign-in or reset links), set
-`LogPath` to return a redacted path or the mux pattern. With the mux
-initialized as shown below, for example:
+`LogPath` to return a redacted path or the mux pattern. When using
+`ServeMux.Handler`, register routes with methods and only log patterns that
+include a method followed by a space: a mux-generated redirect can return a
+request-derived path instead of a registered pattern. A path can itself
+contain a space, so reject path-shaped results too. Use a constant such as
+`unmatched` otherwise. With the mux initialized as shown below, for example:
 
 ```go
 LogPath: func(r *http.Request) string {
 	m := mux.Load()
 	if m == nil {
-		return ""
+		return "unmatched"
 	}
 	_, pattern := m.Handler(r)
-	return pattern
+	if method, _, ok := strings.Cut(pattern, " "); ok && method != "" && !strings.Contains(method, "/") {
+		return pattern
+	}
+	return "unmatched"
 },
 ```
 

@@ -69,6 +69,8 @@ type Config struct {
 	// LogPath returns the path written to the kit's log lines. nil logs
 	// r.URL.Path (never the query). Set it when paths carry credentials, such
 	// as one-time links: return a redacted path or the mux's matched pattern.
+	// A mux redirect can return a path instead of a registered pattern. Log
+	// only patterns with an explicit method, and use a constant otherwise.
 	// It must not read the body.
 	LogPath func(*http.Request) string
 }
