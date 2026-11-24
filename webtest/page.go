@@ -8,9 +8,6 @@ import (
 	"golang.org/x/net/html"
 )
 
-// TokenField is the form field name used for CSRF tokens.
-const TokenField = "csrf_token"
-
 // Page holds the forms and CSRF token inputs parsed from a response.
 type Page struct {
 	response *Response

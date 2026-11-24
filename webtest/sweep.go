@@ -177,7 +177,7 @@ func (s Sweep) attempt(t testing.TB, route Route, ck *http.Cookie) {
 			if token == nil {
 				token = (*Client).sweepToken
 			}
-			fields.Set("csrf_token", token(c, s.TokenPage))
+			fields.Set(TokenField, token(c, s.TokenPage))
 		}
 		req := c.NewRequest(route.Method, route.Path, strings.NewReader(fields.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -203,11 +203,10 @@ func (r Route) name() string {
 	return r.Method + " " + r.Path
 }
 
-// sweepToken is a temporary bridge until Client.Page is available.
+// sweepToken reads the request-forgery token from the page at path.
 func (c *Client) sweepToken(path string) string {
 	c.t.Helper()
-	c.t.Fatalf("sweep token pages need Client.Page; merge the pages branch")
-	return ""
+	return c.Page(path).Token()
 }
 
 // RedirectsTo requires a 303 and exactly one raw Location starting with prefix.
