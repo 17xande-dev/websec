@@ -1,6 +1,7 @@
 package csrf
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -18,8 +19,9 @@ type origin struct {
 // Config.TrustedOrigins entry with the given Insecure setting: a lowercase
 // scheme://host[:port] with no path, query, fragment, userinfo or trailing
 // slash; https, or http only when insecure; no default port (:443 for https,
-// :80 for http); a port, if present, written as browsers send it (1-65535,
-// no leading zero). New applies exactly these rules.
+// :80 for http); an ASCII host with IP literals in canonical form; and a port,
+// if present, written as browsers send it (1-65535, no leading zero).
+// New applies exactly these rules.
 func ValidateOrigin(origin string, insecure bool) error {
 	if _, err := parseOrigin(origin, insecure); err != nil {
 		return fmt.Errorf("csrf: %w", err)
@@ -48,13 +50,20 @@ func originPolicy(own string, trusted []string, insecure bool) (func(*url.URL) b
 	}, nil
 }
 
+var errOriginFormat = errors.New("want a lowercase scheme://host[:port] with no other URL parts")
+
 func parseOrigin(raw string, insecure bool) (origin, error) {
 	u, err := url.Parse(raw)
 	// Reconstructing catches even empty queries/fragments, and rejects
 	// uppercase schemes (url.Parse would otherwise silently normalize them).
-	if err != nil || u.Hostname() == "" || raw != u.Scheme+"://"+u.Host ||
-		raw != strings.ToLower(raw) || !validAuthority(u) {
-		return origin{}, errors.New("want a lowercase scheme://host[:port] with no other URL parts")
+	if err != nil || u.Hostname() == "" || raw != u.Scheme+"://"+u.Host {
+		return origin{}, errOriginFormat
+	}
+	if err := validateOriginAuthority(u); err != nil {
+		return origin{}, err
+	}
+	if raw != strings.ToLower(raw) {
+		return origin{}, errOriginFormat
 	}
 	switch u.Scheme {
 	case "https":
@@ -80,19 +89,66 @@ func parseOrigin(raw string, insecure bool) (origin, error) {
 
 var defaultPorts = map[string]string{"https": "443", "http": "80"}
 
-func validAuthority(u *url.URL) bool {
+func validateOriginAuthority(u *url.URL) error {
 	host := u.Hostname()
+	for i := range len(host) {
+		if host[i] >= 0x80 {
+			return errors.New("origin host must be ASCII; use Punycode for internationalized names")
+		}
+	}
 	if strings.HasPrefix(u.Host, "[") {
 		ip, err := netip.ParseAddr(host)
 		if err != nil || !ip.Is6() || ip.Zone() != "" {
-			return false
+			return errOriginFormat
+		}
+		canonical := ip.String()
+		if ip.Is4In6() {
+			// netip writes mapped addresses with a dotted suffix; browsers
+			// write the last two pieces in hex, like any other IPv6 literal.
+			v4 := ip.As4()
+			canonical = fmt.Sprintf("::ffff:%x:%x", binary.BigEndian.Uint16(v4[:2]), binary.BigEndian.Uint16(v4[2:]))
+		}
+		if host != canonical {
+			return fmt.Errorf("IPv6 origin host must use canonical spelling; use [%s]", canonical)
 		}
 	} else if strings.ContainsAny(host, ":[]") {
-		return false
+		return errOriginFormat
+	} else if ipv4Spelling(host) {
+		if ip, err := netip.ParseAddr(host); err != nil || !ip.Is4() {
+			return errors.New("IPv4 origin host must use canonical dotted-quad spelling")
+		}
 	}
 	if port := u.Port(); port != "" {
-		_, err := strconv.ParseUint(port, 10, 16)
-		return err == nil
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return errOriginFormat
+		}
+	} else if strings.HasSuffix(u.Host, ":") {
+		return errOriginFormat
 	}
-	return !strings.HasSuffix(u.Host, ":")
+	return nil
+}
+
+// ipv4Spelling recognizes IPv4-shaped hosts, including legacy browser
+// spellings. Check the shape without interpreting values; netip accepts only
+// canonical dotted quads. Names with DNS labels are left alone.
+func ipv4Spelling(host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	if strings.Count(host, ".") > 3 {
+		return false
+	}
+	for part := range strings.SplitSeq(host, ".") {
+		if part == "" {
+			return false
+		}
+		if hex, ok := strings.CutPrefix(part, "0x"); ok {
+			if strings.ContainsFunc(hex, func(r rune) bool {
+				return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f')
+			}) {
+				return false
+			}
+		} else if strings.ContainsFunc(part, func(r rune) bool { return r < '0' || r > '9' }) {
+			return false
+		}
+	}
+	return true
 }

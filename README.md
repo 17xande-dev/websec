@@ -300,6 +300,8 @@ the hook's request body: it is empty.
    (`https://app.example:443`, `https://app.example:0443` and
    `https://app.example:0` fail startup). Browsers omit default ports and
    normalize leading zeros; the policy also disallows port zero.
+   Write internationalized hosts in Punycode, IPv6 literals in canonical
+   compressed form, and IPv4 addresses as canonical dotted quads.
    To check a configured value before anything else starts (for example,
    before migrations), call `csrf.ValidateOrigin(value, insecure)`; `New`
    applies exactly the same rules. Every
@@ -605,6 +607,9 @@ value is the subtest name that `go test` prints.
 
 ## Changes
 
+- **Unreleased**
+  - `csrf.ValidateOrigin` and `csrf.New` refuse Unicode hosts and noncanonical
+    IPv4 and IPv6 spellings that browsers don't use in `Origin` headers.
 - **v0.3.0**
   - `csrf.ValidateOrigin` checks configuration with the same rules as `New`,
     which now also refuses ports with leading zeros and port zero.
