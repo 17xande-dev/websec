@@ -258,8 +258,10 @@ custom handler runs only if the origin check passed and the missing form token
 is the only CSRF failure, with no `X-CSRF-Token` header present. It must not
 upload anything or change state. Untrusted origins and requests with a CSRF
 header are refused. Anonymous or unpermitted callers, exempt routes, and
-routes without the opt-in keep the plain 413. A valid `X-CSRF-Token` on an
-oversized hand-off is refused with 403 and logged. Streamed uploads that exceed
+routes without the opt-in keep the plain 413. A request that sends `X-CSRF-Token` is refused with 403 even if the token is
+valid: the friendly refusal is for browser forms, whose token travels in the
+discarded body, and a valid token must never deliver a discarded body to a
+route. The refusal is logged. Streamed uploads that exceed
 the cap still get 413 after a bounded read; uploads at or below the cap still
 need a valid token.
 
