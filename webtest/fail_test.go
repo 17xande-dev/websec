@@ -58,6 +58,15 @@ func recordFailure(t testing.TB, check func(testing.TB)) *failRecorder {
 	return <-done
 }
 
+func checkFailure(t *testing.T, check func(testing.TB), wantFail bool, wantMsg string) {
+	t.Helper()
+	r := recordFailure(t, check)
+	if r.Failed() != wantFail || !strings.Contains(strings.Join(r.messages, "\n"), wantMsg) {
+		t.Errorf("failed = %v, messages = %q; want failed = %v, message containing %q",
+			r.Failed(), r.messages, wantFail, wantMsg)
+	}
+}
+
 func TestFailRecorder(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
