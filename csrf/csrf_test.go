@@ -147,6 +147,56 @@ func TestOrigins(t *testing.T) {
 	}
 }
 
+func TestReasonSentinels(t *testing.T) {
+	for _, pair := range []struct{ got, want error }{
+		{csrf.ErrBadToken, nosurf.ErrBadToken},
+		{csrf.ErrBadOrigin, nosurf.ErrBadOrigin},
+		{csrf.ErrNoReferer, nosurf.ErrNoReferer},
+		{csrf.ErrBadReferer, nosurf.ErrBadReferer},
+	} {
+		if pair.got != pair.want {
+			t.Errorf("exported error %v is not the same value as nosurf's %v", pair.got, pair.want)
+		}
+	}
+
+	reasons := make(chan error, 1)
+	p := mustNew(t, csrf.Config{
+		Origin: ownOrigin,
+		OnFailure: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			reasons <- csrf.Reason(r)
+			w.WriteHeader(http.StatusForbidden)
+		}),
+	})
+	s, client := server(t, p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, csrf.Token(r))
+	})))
+	token, _ := formToken(t, s, client, "/")
+	for _, tc := range []struct {
+		name, origin, token string
+		want                error
+	}{
+		{"bad token", ownOrigin, "invalid", csrf.ErrBadToken},
+		{"foreign origin", "https://app.example:8443", token, csrf.ErrBadOrigin},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := request(t, http.MethodPost, s.URL, nil)
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set(csrf.HeaderName, tc.token)
+			if resp, _ := send(t, client, req); resp.StatusCode != http.StatusForbidden {
+				t.Errorf("status = %d, want 403", resp.StatusCode)
+			}
+			select {
+			case reason := <-reasons:
+				if !errors.Is(reason, tc.want) {
+					t.Errorf("Reason = %v, want %v", reason, tc.want)
+				}
+			default:
+				t.Error("OnFailure did not run")
+			}
+		})
+	}
+}
+
 func TestInsecureOrigins(t *testing.T) {
 	// In plain-HTTP development the TLS answer must be false: nosurf then
 	// compares http://Host. A wrong answer would be hidden by the allowlist's

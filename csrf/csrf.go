@@ -25,6 +25,14 @@ const (
 // ErrNotProtected is returned when Renew has no active CSRF request.
 var ErrNotProtected = errors.New("csrf: request is not protected")
 
+// Reasons returned by Reason. Compare with errors.Is.
+var (
+	ErrBadToken   = nosurf.ErrBadToken
+	ErrBadOrigin  = nosurf.ErrBadOrigin
+	ErrNoReferer  = nosurf.ErrNoReferer
+	ErrBadReferer = nosurf.ErrBadReferer
+)
+
 // Config describes the CSRF policy shared by all handlers wrapped by a Protect.
 type Config struct {
 	// Origin is the public origin, without a trailing slash, and is always

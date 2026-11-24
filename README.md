@@ -310,7 +310,9 @@ Failed CSRF checks log a warning and return a plain-text 403 with
 `Cache-Control: no-store`. For `HX-Request: true` the response also sets
 `HX-Refresh: true`. Override the response with `OnFailure` if reloading would
 discard unsaved typing. The warning is still logged, and `csrf.Reason(r)` is
-available inside the override.
+available inside the override. Use `errors.Is` to compare it with
+`csrf.ErrBadToken`, `csrf.ErrBadOrigin`, `csrf.ErrNoReferer` or
+`csrf.ErrBadReferer`.
 
 Call `p.Renew(w, r)` before writing headers at sign-in, sign-out and when users
 change their own password. It replaces the cookie and returns the masked token
