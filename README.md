@@ -286,7 +286,7 @@ OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
 
    ```go
    Limit: func(r *http.Request) csrf.BodyLimit {
-   	if r.URL.Path == "/photos" {
+   	if _, pattern := mux.Load().Handler(r); pattern == "POST /photos" {
    		return csrf.BodyLimit{MultipartMaxBytes: 32 << 20}
    	}
    	return csrf.BodyLimit{} // 256 KiB, no multipart
