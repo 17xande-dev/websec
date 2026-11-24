@@ -125,7 +125,7 @@ func (c *Client) Do(req *http.Request, opts ...Option) *Response {
 	if err != nil {
 		c.t.Fatalf("%s %s: read response body: %v", req.Method, req.URL.RequestURI(), err)
 	}
-	return &Response{Request: req, Status: res.StatusCode, Header: res.Header, Body: string(body), t: c.t}
+	return &Response{Request: req, Status: res.StatusCode, Header: res.Header, Body: string(body), t: c.t, client: c}
 }
 
 // Follow explicitly sends a GET to a 3xx response's Location, resolved

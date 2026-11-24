@@ -17,7 +17,8 @@ type Response struct {
 	// Body is the response body.
 	Body string
 
-	t testing.TB
+	t      testing.TB
+	client *Client
 }
 
 // Location returns the raw Location header, or "" if absent. It fails the
