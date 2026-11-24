@@ -52,8 +52,15 @@ func parseOrigin(raw string, insecure bool) (origin, error) {
 	default:
 		return origin{}, errors.New("scheme must be https or http")
 	}
+	// Browsers leave the default port out of the Origin header, so an entry
+	// that spells it could never match: a silently dead entry.
+	if port := u.Port(); port != "" && port == defaultPorts[u.Scheme] {
+		return origin{}, fmt.Errorf("port %s is the default for %s and browsers omit it; remove it", port, u.Scheme)
+	}
 	return origin{u.Scheme, u.Host}, nil
 }
+
+var defaultPorts = map[string]string{"https": "443", "http": "80"}
 
 func validAuthority(u *url.URL) bool {
 	host := u.Hostname()

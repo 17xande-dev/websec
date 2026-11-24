@@ -46,6 +46,12 @@ func TestNew(t *testing.T) {
 		{"plain HTTP without Insecure", func(c *csrf.Config) { c.Origin = "http://a.example" }},
 		{"invalid extra origin", func(c *csrf.Config) { c.TrustedOrigins = []string{"https://embed.example", "https://a.example/path"} }},
 		{"plain HTTP extra without Insecure", func(c *csrf.Config) { c.TrustedOrigins = []string{"http://embed.example"} }},
+		{"origin with the default HTTPS port", func(c *csrf.Config) { c.Origin = "https://a.example:443" }},
+		{"origin with the default HTTP port", func(c *csrf.Config) { c.Origin, c.Insecure = "http://a.example:80", true }},
+		{"extra origin with the default HTTPS port", func(c *csrf.Config) { c.TrustedOrigins = []string{"https://embed.example:443"} }},
+		{"extra origin with the default HTTP port", func(c *csrf.Config) {
+			c.Insecure, c.TrustedOrigins = true, []string{"http://embed.example:80"}
+		}},
 		{"insecure cross-site cookie", func(c *csrf.Config) { c.Insecure, c.CrossSite = true, true }},
 		{"negative default body cap", func(c *csrf.Config) { c.MaxBody = -1 }},
 		{"default body cap over 64 MiB", func(c *csrf.Config) { c.MaxBody = 64<<20 + 1 }},
@@ -70,6 +76,8 @@ func TestNew(t *testing.T) {
 	mustNew(t, csrf.Config{Origin: ownOrigin, TrustedOrigins: []string{ownOrigin, "https://embed.example", "https://embed.example"}})
 	mustNew(t, csrf.Config{Origin: "https://[2001:db8::1]:8443", MaxBody: 64 << 20})
 	mustNew(t, csrf.Config{Origin: "http://app.example:8080", Insecure: true, TrustedOrigins: []string{"http://embed.example:8081"}})
+	// A default port of the other scheme is an ordinary port.
+	mustNew(t, csrf.Config{Origin: "https://app.example:80", Insecure: true, TrustedOrigins: []string{"http://embed.example:443"}})
 }
 
 func TestOrigins(t *testing.T) {

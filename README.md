@@ -221,8 +221,10 @@ OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
 
 1. **The origin is required.** `New` fails without `Origin`. Use lowercase
    `https://host[:port]` (or `http://` only with `Insecure`): no path, query,
-   fragment, userinfo or trailing slash. Every `TrustedOrigins` entry has the
-   same format. The origin is always trusted even when a proxy rewrites `Host`;
+   fragment, userinfo or trailing slash. Leave out the scheme's default port
+   (`https://host:443` and `http://host:80` fail startup): browsers omit it
+   from the `Origin` header, so such an entry could never match. Every
+   `TrustedOrigins` entry has the same format. The origin is always trusted even when a proxy rewrites `Host`;
    sibling subdomains are not trusted unless listed; and the TLS answer comes
    from config, not a forwarded header, because a client-supplied header must
    not change the policy. A value that an older hand-written check silently
