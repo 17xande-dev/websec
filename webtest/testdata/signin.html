@@ -1,0 +1,11 @@
+<!doctype html>
+<title>Sign in</title>
+<form action="/search">
+  <input name="query">
+</form>
+<form action="session" method="post">
+  <input type="hidden" name="csrf_token" value="example&#43;token&#61;">
+  <input type="hidden" name="step" value="initial">
+  <input type="email" name="account_id" value="default@app.example">
+  <input type="password" name="passcode">
+</form>
