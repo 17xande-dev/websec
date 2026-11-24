@@ -456,7 +456,10 @@ func TestDuplicateOriginsAreIgnored(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})))
 	token, _ := formToken(t, s, client, "/")
-	for origin, want := range map[string]int{ownOrigin: 204, embed: 204, "https://other.example": 403} {
+	// The port is part of the match: an entry without one never admits a
+	// request origin that has one.
+	for origin, want := range map[string]int{ownOrigin: 204, embed: 204, "https://other.example": 403,
+		ownOrigin + ":8443": 403, embed + ":8443": 403} {
 		req := request(t, "POST", s.URL, strings.NewReader(url.Values{csrf.FieldName: {token}}.Encode()))
 		req.Header.Set("Content-Type", urlencoded)
 		req.Header.Set("Origin", origin)
