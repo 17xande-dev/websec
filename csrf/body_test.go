@@ -1,6 +1,7 @@
 package csrf_test
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -8,17 +9,196 @@ import (
 	"io"
 	"log/slog"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/17xande-dev/websec/csrf"
 )
 
 const urlencoded = "application/x-www-form-urlencoded"
+
+type bodyRefusal struct {
+	status int
+	cause  error
+}
+
+func observeBodyRefusal(refusals chan<- bodyRefusal) func(http.ResponseWriter, *http.Request, int) {
+	return func(w http.ResponseWriter, r *http.Request, status int) {
+		refusals <- bodyRefusal{status: status, cause: csrf.BodyError(r)}
+		w.WriteHeader(status)
+	}
+}
+
+func TestBodyErrorCause(t *testing.T) {
+	const multipartType = "multipart/form-data; boundary=test-boundary"
+	const part = "--test-boundary\r\nContent-Disposition: form-data; name=\"field\"\r\n\r\n"
+	for _, tc := range []struct {
+		name, method, mediaType string
+		body                    io.Reader
+		multipartCap            int64
+		status                  int
+		wantCause               error
+		wantMaxBytes            bool
+	}{
+		{"declared oversize", "POST", urlencoded, strings.NewReader("field=" + strings.Repeat("x", 64)),
+			0, 413, csrf.ErrBodyTooLarge, false},
+		{"chunked URL-encoded oversize", "POST", urlencoded, streamed{strings.NewReader("field=" + strings.Repeat("x", 64))},
+			0, 413, csrf.ErrBodyTooLarge, true},
+		{"chunked multipart oversize", "POST", multipartType,
+			streamed{strings.NewReader(part + strings.Repeat("x", 128) + "\r\n--test-boundary--\r\n")},
+			128, 413, csrf.ErrBodyTooLarge, true},
+		{"unsafe multipart refused", "POST", multipartType, strings.NewReader("--test-boundary--\r\n"),
+			0, 415, csrf.ErrMultipartRefused, false},
+		{"safe multipart refused", "GET", multipartType, strings.NewReader("--test-boundary--\r\n"),
+			128, 415, csrf.ErrMultipartRefused, false},
+		{"malformed media parameter", "POST", urlencoded + "; charset", strings.NewReader("field=x"),
+			0, 400, nil, false},
+		{"truncated multipart", "POST", multipartType, strings.NewReader(part + "x\r\n--wrong-boundary--\r\n"),
+			128, 400, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refusals := make(chan bodyRefusal, 1)
+			p := mustNew(t, csrf.Config{
+				Origin: ownOrigin, MaxBody: 32, OnBodyError: observeBodyRefusal(refusals),
+				Limit: func(*http.Request) csrf.BodyLimit {
+					return csrf.BodyLimit{MultipartMaxBytes: tc.multipartCap}
+				},
+			})
+			s, client := server(t, p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("refused request reached the wrapped handler")
+				w.WriteHeader(http.StatusNoContent)
+			})))
+			req := request(t, tc.method, s.URL, tc.body)
+			req.Header.Set("Content-Type", tc.mediaType)
+			req.Header.Set("Origin", ownOrigin)
+			if resp, _ := send(t, client, req); resp.StatusCode != tc.status {
+				t.Errorf("response status = %d, want %d", resp.StatusCode, tc.status)
+			}
+			select {
+			case got := <-refusals:
+				if got.status != tc.status || got.cause == nil {
+					t.Errorf("hook got status %d, cause %v; want status %d and non-nil cause", got.status, got.cause, tc.status)
+				}
+				for _, sentinel := range []error{csrf.ErrBodyTooLarge, csrf.ErrMultipartRefused} {
+					if errors.Is(got.cause, sentinel) != (tc.wantCause == sentinel) {
+						t.Errorf("cause %v does not match expected classification %v", got.cause, tc.wantCause)
+					}
+				}
+				var maxBytes *http.MaxBytesError
+				if errors.As(got.cause, &maxBytes) != tc.wantMaxBytes {
+					t.Errorf("cause = %v, want *http.MaxBytesError in chain: %t", got.cause, tc.wantMaxBytes)
+				}
+			default:
+				t.Error("OnBodyError did not run")
+			}
+		})
+	}
+}
+
+func TestBodyErrorTimeout(t *testing.T) {
+	for _, tc := range []struct{ name, mediaType, prefix string }{
+		{"URL-encoded", urlencoded, "field=x"},
+		{"multipart", "multipart/form-data; boundary=test-boundary",
+			"--test-boundary\r\nContent-Disposition: form-data; name=\"field\"\r\n\r\nx"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refusals := make(chan bodyRefusal, 1)
+			p := mustNew(t, csrf.Config{
+				Origin: ownOrigin, OnBodyError: observeBodyRefusal(refusals),
+				Limit: func(*http.Request) csrf.BodyLimit {
+					return csrf.BodyLimit{MultipartMaxBytes: 128 << 10}
+				},
+			})
+			protected := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("incomplete request reached the wrapped handler")
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+					t.Errorf("set read deadline: %v", err)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				protected.ServeHTTP(w, r)
+			}))
+			defer s.Close()
+			conn, err := net.DialTimeout("tcp", s.Listener.Addr().String(), 5*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			// Keep the connection open after a partial write so the server
+			// must hit its read deadline rather than see EOF.
+			if _, err := fmt.Fprintf(conn, "POST / HTTP/1.1\r\nHost: app.example\r\nContent-Type: %s\r\n"+
+				"Content-Length: 100000\r\nConnection: close\r\n\r\n%s", tc.mediaType, tc.prefix); err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("response status = %d, want 400", resp.StatusCode)
+			}
+			select {
+			case got := <-refusals:
+				if got.status != http.StatusBadRequest || !errors.Is(got.cause, os.ErrDeadlineExceeded) {
+					t.Errorf("hook got status %d, cause %v; want 400 and a deadline error", got.status, got.cause)
+				}
+			default:
+				t.Error("OnBodyError did not run")
+			}
+		})
+	}
+}
+
+func TestBodyErrorOutsideHook(t *testing.T) {
+	check := func(status int) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if err := csrf.BodyError(r); err != nil {
+				t.Errorf("handler writing status %d got BodyError = %v, want nil", status, err)
+			}
+			w.WriteHeader(status)
+		}
+	}
+	p := mustNew(t, csrf.Config{
+		Origin: ownOrigin, OnFailure: check(http.StatusForbidden), Oversized: check(http.StatusUnprocessableEntity),
+		Limit: func(*http.Request) csrf.BodyLimit {
+			return csrf.BodyLimit{MultipartMaxBytes: 1, PassOversized: func(*http.Request) bool { return true }}
+		},
+	})
+	s, client := server(t, p.Handler(check(http.StatusNoContent)))
+	for _, tc := range []struct {
+		name, method string
+		body         io.Reader
+		want         int
+	}{
+		{"wrapped handler", "GET", nil, 204},
+		{"OnFailure", "POST", nil, 403},
+		{"Oversized", "POST", strings.NewReader("--test-boundary--\r\n"), 422},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := request(t, tc.method, s.URL, tc.body)
+			req.Header.Set("Origin", ownOrigin)
+			if tc.body != nil {
+				req.Header.Set("Content-Type", "multipart/form-data; boundary=test-boundary")
+			}
+			if resp, _ := send(t, client, req); resp.StatusCode != tc.want {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tc.want)
+			}
+		})
+	}
+}
 
 type countedBody struct {
 	io.ReadCloser

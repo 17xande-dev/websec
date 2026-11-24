@@ -217,6 +217,24 @@ OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
 },
 ```
 
+Inside the hook, `csrf.BodyError(r)` says why: `ErrBodyTooLarge` for every
+413, `ErrMultipartRefused` for every 415, and the read or parse error for a
+400. A read that ran into a deadline satisfies
+`errors.Is(err, os.ErrDeadlineExceeded)`, so a slow upload can get 408:
+
+```go
+OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
+	if errors.Is(csrf.BodyError(r), os.ErrDeadlineExceeded) {
+		w.Header().Set("Connection", "close")
+		http.Error(w, "The upload took too long. Try again.", http.StatusRequestTimeout)
+		return
+	}
+	http.Error(w, http.StatusText(status), status)
+},
+```
+
+Branch on the error; do not show or log its text.
+
 ### Adoption checklist
 
 1. **The origin is required.** `New` fails without `Origin`. Use lowercase

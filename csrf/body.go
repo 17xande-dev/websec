@@ -3,11 +3,36 @@ package csrf
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 )
+
+var (
+	// ErrBodyTooLarge is the cause of every 413 refusal: a declared length
+	// over the cap (nothing read) or a body that exceeded it while being read
+	// (the cause then also wraps the *http.MaxBytesError).
+	ErrBodyTooLarge = errors.New("csrf: request body too large")
+	// ErrMultipartRefused is the cause of every 415 refusal.
+	ErrMultipartRefused = errors.New("csrf: multipart body not allowed")
+)
+
+type bodyErrorKey struct{}
+
+// BodyError returns why the kit refused the body, for use inside
+// Config.OnBodyError. It is nil anywhere else. A 400 carries the read or parse
+// error; when a read deadline or another network timeout ended the read,
+// errors.Is(err, os.ErrDeadlineExceeded) reports true. Branch on the error
+// with errors.Is or errors.As; do not show or log its text, which can contain
+// parser detail.
+func BodyError(r *http.Request) error {
+	err, _ := r.Context().Value(bodyErrorKey{}).(error)
+	return err
+}
 
 // BodyLimit controls the size caps and multipart policy for an unsafe request.
 // The request's media type picks the cap: MaxBytes never applies to multipart,
@@ -52,7 +77,7 @@ func (p *Protect) limitBody(next, check http.Handler) http.Handler {
 			// parses a multipart one for any method and spools its files to
 			// disk. Bound it, and refuse the one type that parses.
 			if mediaType, _ := requestMediaType(r); mediaType == "multipart/form-data" {
-				p.bodyError(w, r, http.StatusUnsupportedMediaType)
+				p.bodyError(w, r, http.StatusUnsupportedMediaType, ErrMultipartRefused)
 				return
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, p.maxBody)
@@ -75,7 +100,7 @@ func (p *Protect) limitBody(next, check http.Handler) http.Handler {
 		multipart := mediaType == "multipart/form-data"
 		if multipart {
 			if limit.MultipartMaxBytes <= 0 {
-				p.bodyError(w, r, http.StatusUnsupportedMediaType)
+				p.bodyError(w, r, http.StatusUnsupportedMediaType, ErrMultipartRefused)
 				return
 			}
 			capBytes = limit.MultipartMaxBytes
@@ -92,7 +117,7 @@ func (p *Protect) limitBody(next, check http.Handler) http.Handler {
 				check.ServeHTTP(w, r)
 				return
 			}
-			p.bodyError(w, r, http.StatusRequestEntityTooLarge)
+			p.bodyError(w, r, http.StatusRequestEntityTooLarge, ErrBodyTooLarge)
 			return
 		}
 
@@ -130,8 +155,14 @@ func (p *Protect) limitBody(next, check http.Handler) http.Handler {
 			var tooLarge *http.MaxBytesError
 			if errors.As(err, &tooLarge) {
 				status = http.StatusRequestEntityTooLarge
+				err = fmt.Errorf("%w: %w", ErrBodyTooLarge, err)
+			} else {
+				var timeout net.Error
+				if !errors.Is(err, os.ErrDeadlineExceeded) && errors.As(err, &timeout) && timeout.Timeout() {
+					err = fmt.Errorf("%w: %w", os.ErrDeadlineExceeded, err)
+				}
 			}
-			p.bodyError(w, r, status)
+			p.bodyError(w, r, status, err)
 			return
 		}
 		check.ServeHTTP(w, r)
@@ -186,7 +217,7 @@ func requestMediaType(r *http.Request) (string, error) {
 // The refused body is still attached on the declared-length 413 and the 415
 // paths. It is replaced with an empty one first, so a hook that calls
 // Request.FormValue or ParseMultipartForm reads and spools nothing.
-func (p *Protect) bodyError(w http.ResponseWriter, r *http.Request, status int) {
+func (p *Protect) bodyError(w http.ResponseWriter, r *http.Request, status int, cause error) {
 	r.Body = http.NoBody
 	r.Form, r.PostForm, r.MultipartForm = nil, nil, nil
 	if status != http.StatusBadRequest {
@@ -198,6 +229,7 @@ func (p *Protect) bodyError(w http.ResponseWriter, r *http.Request, status int) 
 	// cached; it may still override the header.
 	w.Header().Set("Cache-Control", "no-store")
 	if p.onBodyErr != nil {
+		r = r.WithContext(context.WithValue(r.Context(), bodyErrorKey{}, cause))
 		p.onBodyErr(w, r, status)
 		return
 	}
