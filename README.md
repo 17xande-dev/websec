@@ -178,6 +178,8 @@ The wrapper applies these rules in order:
    consulted) and refuse a multipart `Content-Type` with 415 before reading
    anything: browsers send no body on these methods, but Go's
    `Request.FormValue` parses and spools a multipart one for any method.
+   Otherwise, a declared length over the cap is not refused: the middleware
+   does not read the body, and handler reads are capped at `MaxBody`.
    Non-exempt safe requests still skip the token check and go through nosurf
    so a form page can issue a token.
 2. On unsafe methods, resolve the limit (`MaxBody` defaults to 256 KiB, and `Limit`
@@ -203,7 +205,11 @@ initialized as shown below, for example:
 
 ```go
 LogPath: func(r *http.Request) string {
-	_, pattern := mux.Load().Handler(r)
+	m := mux.Load()
+	if m == nil {
+		return ""
+	}
+	_, pattern := m.Handler(r)
 	return pattern
 },
 ```
@@ -213,8 +219,8 @@ A `Logger` whose handler rewrites the top-level `path` attribute also works.
 Set `Config.OnBodyError` to write the response
 yourself; the warning is still logged. The hook runs after the kit has set
 `Cache-Control: no-store` and, for a 413 or 415 on HTTP/1, `Connection: close`
-(the body was not read, so the server must not drain it to reuse the
-connection). It receives an empty body and no parsed form fields (the query
+so the server does not need to drain the rest of the body to reuse the
+connection. It receives an empty body and no parsed form fields (the query
 string stays readable). It is not called for CSRF failures (`OnFailure`), the
 oversized-upload hand-off (`Oversized`) or the 500 for a `Limit` bug. Use it to
 word the refusal for your users; it cannot accept the request. For example, to
@@ -253,6 +259,19 @@ OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
 
 Branch on the error; do not show or log its text.
 
+The middleware's 413 and 415 refusals also apply to exempt routes. For a
+JSON endpoint, check the mux pattern in `OnBodyError` and write a JSON error
+instead of the default plain text.
+
+A declared-length 413 or a 415 is sent without reading the body; a streamed
+413 can follow a bounded read. On HTTP/1 the connection closes, and a browser
+still sending a large upload may show a connection error instead of the
+refusal page. If that matters for a refusal before any read, keep a reference
+to the original body in middleware outside `p.Handler`. In `OnBodyError`,
+drain only a bounded number of bytes under a read deadline before answering,
+and only for callers you have already authenticated. Do not drain through
+the hook's request body: it is empty.
+
 ### Adoption checklist
 
 1. **The origin is required.** `New` fails without `Origin`. Use lowercase
@@ -260,7 +279,8 @@ Branch on the error; do not show or log its text.
    fragment, userinfo or trailing slash. Leave out the scheme's default port
    and write any other port as browsers do, without leading zeros
    (`https://app.example:443`, `https://app.example:0443` and
-   `https://app.example:0` fail startup): such an entry could never match.
+   `https://app.example:0` fail startup). Browsers omit default ports and
+   normalize leading zeros; the policy also disallows port zero.
    To check a configured value before anything else starts (for example,
    before migrations), call `csrf.ValidateOrigin(value, insecure)`; `New`
    applies exactly the same rules. Every
@@ -270,37 +290,54 @@ Branch on the error; do not show or log its text.
    because a client-supplied header must not change the policy. A value that an older hand-written check silently
    never matched (a trailing slash, upper case) now **fails startup**, so
    validate configuration before deploying.
+
+   Nosurf accepts `Sec-Fetch-Site: same-origin` without comparing `Origin`.
+   Browsers set that header themselves; page scripts cannot set it, and
+   unsafe, non-exempt requests still need a valid token. If your application
+   also requires `Origin` to match in this case, keep that additional check
+   in front of the middleware.
 2. **Duplicates are ignored.** A `TrustedOrigins` entry equal to `Origin` or to
    an earlier entry is accepted and ignored, so a list shared with a CORS
    setup does not fail a start. Malformed entries still fail.
-3. **Per-route limits run before routing.** `Limit` and `Exempt` run before the
-   mux. Decide with the mux's own match, comparing the **pattern**, never a
+3. **Per-route limits run before routing.** `Limit` runs for unsafe methods;
+   `Exempt` runs for requests that reach the exemption check. Either can run
+   before `mux.Store`; a nil mux should mean default limits and no exemption.
+   Decide with the mux's own match, comparing the **pattern**, never a
    string prefix of `r.URL.Path` (alternate spellings of a path may not reach
    the same handler). Keep a reference to the mux (an
    `atomic.Pointer[http.ServeMux]` when the mux is built after the policy).
-   One `Protect` may wrap several muxes, each with its own lookup.
+   For a path like `/a/./b` that the mux redirects to a matching route,
+   `Handler` returns that route's pattern. Its cap applies before the mux
+   can send the redirect.
 
    ```go
    var mux atomic.Pointer[http.ServeMux]
 
    p, err := csrf.New(csrf.Config{
-   	Origin: "https://app.example",
-   	Limit: func(r *http.Request) csrf.BodyLimit {
-   		if _, pattern := mux.Load().Handler(r); pattern == "POST /photos" {
-   			return csrf.BodyLimit{MultipartMaxBytes: 32 << 20}
-   		}
-   		return csrf.BodyLimit{}
-   	},
-   	Exempt: func(r *http.Request) bool {
-   		_, pattern := mux.Load().Handler(r)
-   		return pattern == "POST /webhook"
-   	},
+       Origin: "https://app.example",
+       Limit: func(r *http.Request) csrf.BodyLimit {
+           m := mux.Load()
+           if m == nil {
+               return csrf.BodyLimit{}
+           }
+           if _, pattern := m.Handler(r); pattern == "POST /photos" {
+               return csrf.BodyLimit{MultipartMaxBytes: 32 << 20}
+           }
+           return csrf.BodyLimit{}
+       },
+       Exempt: func(r *http.Request) bool {
+           m := mux.Load()
+           if m == nil {
+               return false
+           }
+           _, pattern := m.Handler(r)
+           return pattern == "POST /webhook"
+       },
    })
-   // build the mux, wrap its handlers with p.Handler, then mux.Store(m).
+   // Check err, then build m and register routes before mux.Store(m).
+   // Serve p.Handler(m).
    ```
 
-   Place any authentication that must precede upload parsing outside this
-   middleware.
 4. **`Renew` and `Token` work only inside `Handler`.** Outside it (and on
    exempt routes) `Token` returns `""` and `Renew` returns `ErrNotProtected`.
    Check the error. A sign-in test should assert that the CSRF cookie value
@@ -323,17 +360,8 @@ Branch on the error; do not show or log its text.
 
    `MaxBytes` never applies to multipart, and `MultipartMaxBytes` never applies
    to anything else, so a route with a huge upload cap cannot be used to send a
-   huge form, JSON or text body. Negative values behave as 0. For an upload
-   route:
-
-   ```go
-   Limit: func(r *http.Request) csrf.BodyLimit {
-   	if _, pattern := mux.Load().Handler(r); pattern == "POST /photos" {
-   		return csrf.BodyLimit{MultipartMaxBytes: 32 << 20}
-   	}
-   	return csrf.BodyLimit{} // 256 KiB, no multipart
-   },
-   ```
+   huge form, JSON or text body. Negative values behave as 0. See the
+   `POST /photos` limit in the example above.
 
 Cookies are host-only, HttpOnly, Secure by default, and last for the browser
 session. They are SameSite=Lax unless `CrossSite` is set for a credentialed
@@ -356,6 +384,61 @@ for the current response so a pre-sign-in or injected token doesn't survive the
 credential change. On exempt or unprotected requests it returns
 `csrf.ErrNotProtected` without setting a cookie.
 
+### Authenticate before large uploads
+
+The middleware parses an allowed multipart body before anything inside the
+mux runs. If an upload route allows large bodies, authenticate the caller
+outside `p.Handler` so an anonymous request cannot make it read the upload.
+In this example, `lookupSession` checks the session and upload permission
+without reading the body and returns the permitted upload cap in bytes.
+Pass a mux with `POST /photos` registered.
+
+```go
+func protectUploads(mux *http.ServeMux, sessions *cookie.Cookie,
+	lookupSession func(*http.Request, string) (capBytes int64, ok bool),
+) (http.Handler, error) {
+	type uploadCapKey struct{}
+	p, err := csrf.New(csrf.Config{
+		Origin: "https://app.example",
+		Limit: func(r *http.Request) csrf.BodyLimit {
+			n, _ := r.Context().Value(uploadCapKey{}).(int64)
+			return csrf.BodyLimit{MultipartMaxBytes: n}
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	next := p.Handler(mux)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern == "POST /photos" {
+			token, hasCookie := sessions.Value(r)
+			var capBytes int64
+			var allowed bool
+			if hasCookie {
+				capBytes, allowed = lookupSession(r, token)
+			}
+			if !allowed || capBytes <= 0 {
+				w.Header().Set("Cache-Control", "no-store")
+				if r.ProtoMajor == 1 {
+					w.Header().Set("Connection", "close")
+				}
+				http.Error(w, "Sign in to upload.", http.StatusUnauthorized)
+				return
+			}
+			rc := http.NewResponseController(w)
+			now := time.Now()
+			if rc.SetReadDeadline(now.Add(30*time.Second)) != nil ||
+				rc.SetWriteDeadline(now.Add(35*time.Second)) != nil {
+				http.Error(w, "Upload unavailable.", http.StatusServiceUnavailable)
+				return
+			}
+			r = r.WithContext(context.WithValue(r.Context(), uploadCapKey{}, capBytes))
+		}
+		next.ServeHTTP(w, r)
+	}), nil
+}
+```
+
 ### Custom refusal for oversized uploads
 
 To show a friendly error on an upload route, have `Limit` return a `BodyLimit`
@@ -375,9 +458,10 @@ header are refused. Anonymous or unpermitted callers, exempt routes, and
 routes without the opt-in keep the plain 413. A request that sends `X-CSRF-Token` is refused with 403 even if the token is
 valid: the friendly refusal is for browser forms, whose token travels in the
 discarded body, and a valid token must never deliver a discarded body to a
-route. The refusal is logged. Streamed uploads that exceed
-the cap still get 413 after a bounded read; uploads at or below the cap still
-need a valid token.
+route. This refusal after a successful token check is logged. `OnFailure`
+is not called for it; a failed origin or token check still goes through
+`OnFailure`. Streamed uploads that exceed the cap still get 413 after a
+bounded read; uploads at or below the cap still need a valid token.
 
 ## Session lifetimes (`websec/session`)
 

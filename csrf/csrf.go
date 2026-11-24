@@ -59,9 +59,10 @@ type Config struct {
 	// refusals: 413 (too large), 415 (multipart not allowed) and 400
 	// (malformed body). It does not replace the warning. The hook receives an
 	// empty body and no parsed form fields; the query string stays readable.
-	// The kit sets Connection: close on HTTP/1 for a 413 or 415 before the
-	// hook runs. It is not called for token failures (see OnFailure) or for the
-	// oversized-upload hand-off (see Oversized).
+	// The 413 and 415 refusals also apply to exempt routes. Before the hook
+	// runs, the kit sets Cache-Control: no-store and, on HTTP/1 for a 413 or
+	// 415, Connection: close. The hook is not called for token failures (see
+	// OnFailure) or for the oversized-upload hand-off (see Oversized).
 	OnBodyError func(w http.ResponseWriter, r *http.Request, status int)
 	Logger      *slog.Logger // nil means slog.Default()
 
