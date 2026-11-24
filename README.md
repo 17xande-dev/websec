@@ -193,9 +193,14 @@ The wrapper applies these rules in order:
 The kit's own refusals (413, 415 and 400) log one warning with the status,
 method and path (never the query, headers or body) and answer in plain text with
 `Cache-Control: no-store`. Set `Config.OnBodyError` to write the response
-yourself; the warning is still logged. The hook receives an empty body and no
-parsed form fields (the query string stays readable). It is not called for CSRF failures (`OnFailure`) or the oversized-upload hand-off
-(`Oversized`). For example, to show a refusal inside an htmx target:
+yourself; the warning is still logged. The hook runs after the kit has set
+`Cache-Control: no-store` and, for a 413 or 415 on HTTP/1, `Connection: close`
+(the body was not read, so the server must not drain it to reuse the
+connection). It receives an empty body and no parsed form fields (the query
+string stays readable). It is not called for CSRF failures (`OnFailure`), the
+oversized-upload hand-off (`Oversized`) or the 500 for a `Limit` bug. Use it to
+word the refusal for your users; it cannot accept the request. For example, to
+show a refusal inside an htmx target:
 
 ```go
 OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
@@ -212,16 +217,81 @@ OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
 },
 ```
 
-Choose a per-route cap using the mux's actual match (or configure limits on the
-already-routed handlers), not a string prefix on the incoming path. Alternate
-spellings of a path may not match the same handler. Place any authentication
-that must precede upload parsing outside this middleware.
+### Adoption checklist
 
-Use the exact lowercase public origin, without a trailing slash. It is always
-trusted even when a proxy rewrites `Host`. `TrustedOrigins` adds exact origins
-(scheme, host and port); sibling subdomains are not trusted unless listed.
-The TLS answer comes from config rather than a forwarded header: a proxy can
-terminate TLS, and a client-supplied header must not change the policy.
+1. **The origin is required.** `New` fails without `Origin`. Use lowercase
+   `https://host[:port]` (or `http://` only with `Insecure`): no path, query,
+   fragment, userinfo or trailing slash. Every `TrustedOrigins` entry has the
+   same format. The origin is always trusted even when a proxy rewrites `Host`;
+   sibling subdomains are not trusted unless listed; and the TLS answer comes
+   from config, not a forwarded header, because a client-supplied header must
+   not change the policy. A value that an older hand-written check silently
+   never matched (a trailing slash, upper case) now **fails startup**, so
+   validate configuration before deploying.
+2. **Duplicates are ignored.** A `TrustedOrigins` entry equal to `Origin` or to
+   an earlier entry is accepted and ignored, so a list shared with a CORS
+   setup does not fail a start. Malformed entries still fail.
+3. **Per-route limits run before routing.** `Limit` and `Exempt` run before the
+   mux. Decide with the mux's own match, comparing the **pattern**, never a
+   string prefix of `r.URL.Path` (alternate spellings of a path may not reach
+   the same handler). Keep a reference to the mux (an
+   `atomic.Pointer[http.ServeMux]` when the mux is built after the policy).
+   One `Protect` may wrap several muxes, each with its own lookup.
+
+   ```go
+   var mux atomic.Pointer[http.ServeMux]
+
+   p, err := csrf.New(csrf.Config{
+   	Origin: "https://app.example",
+   	Limit: func(r *http.Request) csrf.BodyLimit {
+   		if _, pattern := mux.Load().Handler(r); pattern == "POST /photos" {
+   			return csrf.BodyLimit{MultipartMaxBytes: 32 << 20}
+   		}
+   		return csrf.BodyLimit{}
+   	},
+   	Exempt: func(r *http.Request) bool {
+   		_, pattern := mux.Load().Handler(r)
+   		return pattern == "POST /webhook"
+   	},
+   })
+   // build the mux, wrap its handlers with p.Handler, then mux.Store(m).
+   ```
+
+   Place any authentication that must precede upload parsing outside this
+   middleware.
+4. **`Renew` and `Token` work only inside `Handler`.** Outside it (and on
+   exempt routes) `Token` returns `""` and `Renew` returns `ErrNotProtected`.
+   Check the error. A sign-in test should assert that the CSRF cookie value
+   changes.
+5. **Build the `*csrf.Protect` before the handlers** and pass it to their
+   constructors. If a setter is unavoidable, make route registration fail when
+   it was never called: a silent no-op means sign-in never renews the token.
+6. **`OnBodyError` is for the kit's own refusals only** (413, 415 and 400); see
+   above for what it receives and what the kit has already set.
+7. **Caps depend on the media type.** `BodyLimit` has three fields:
+
+   - `MaxBytes` caps every non-multipart body (0 means `Config.MaxBody`;
+     more than 64 MiB gets a 500 and an error log, because such a body is
+     parsed in memory).
+   - `MultipartMaxBytes` allows `multipart/form-data` up to that size; 0
+     refuses multipart with 415.
+   - `MaxMemory` is the multipart parse memory (0 means
+     `min(MultipartMaxBytes, 1 MiB)`; larger values are clamped to
+     `MultipartMaxBytes`). Larger file parts spool to disk.
+
+   `MaxBytes` never applies to multipart, and `MultipartMaxBytes` never applies
+   to anything else, so a route with a huge upload cap cannot be used to send a
+   huge form, JSON or text body. Negative values behave as 0. For an upload
+   route:
+
+   ```go
+   Limit: func(r *http.Request) csrf.BodyLimit {
+   	if r.URL.Path == "/photos" {
+   		return csrf.BodyLimit{MultipartMaxBytes: 32 << 20}
+   	}
+   	return csrf.BodyLimit{} // 256 KiB, no multipart
+   },
+   ```
 
 Cookies are host-only, HttpOnly, Secure by default, and last for the browser
 session. They are SameSite=Lax unless `CrossSite` is set for a credentialed
@@ -358,7 +428,14 @@ reason is visible in `go test -v`.
 - **v0.2.0 (unreleased)**: Session cookie helpers, session lifetime policy,
   store conformance tests, and CSRF protection with bounded form parsing and
   opt-in oversized-upload responses, a body cap and multipart refusal on safe
-  methods, and an `OnBodyError` hook.
+  methods, and an `OnBodyError` hook. `BodyLimit` caps by media type:
+  `MaxBytes` for every non-multipart body (at most 64 MiB, else 500) and
+  `MultipartMaxBytes` for multipart (0 refuses it with 415), so a large upload
+  cap cannot admit a large form body. The kit sets `Connection: close` on every
+  HTTP/1 413, 415 and 500 where the body was not read. A `TrustedOrigins`
+  entry that repeats `Origin` or an earlier entry is ignored instead of failing
+  startup; malformed entries still fail. A valid `X-CSRF-Token` on an oversized
+  upload is refused with 403, never handed to the route.
 - **v0.1.1**: `FuzzSafeRedirect` is now seeded with the browser-semantics rows
   as well as the general table, plus `/admin/x%2fy`, so a mutant that matches
   `Prefix` against the decoded path is caught from the seed corpus. Tests only;
