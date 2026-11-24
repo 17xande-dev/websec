@@ -49,8 +49,9 @@ type Config struct {
 
 	// OnBodyError replaces the plain-text response for the kit's own body
 	// refusals: 413 (too large), 415 (multipart not allowed) and 400
-	// (malformed body). It does not replace the warning. It must not read the
-	// body. It is not called for token failures (see OnFailure) or for the
+	// (malformed body). It does not replace the warning. The hook receives an
+	// empty body and no parsed form fields; the query string stays readable.
+	// It is not called for token failures (see OnFailure) or for the
 	// oversized-upload hand-off (see Oversized).
 	OnBodyError func(w http.ResponseWriter, r *http.Request, status int)
 	Logger      *slog.Logger // nil means slog.Default()

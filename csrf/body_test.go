@@ -162,7 +162,7 @@ func TestSafeMethods(t *testing.T) {
 	})
 	s, _ := server(t, p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if csrf.Token(r) == "" || r.PostForm != nil || r.MultipartForm != nil {
-			t.Error("safe request was not passed unchanged to nosurf")
+			t.Error("safe request reached the handler without a token or with a parsed body")
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})))
@@ -219,6 +219,7 @@ func TestSafeMethodBody(t *testing.T) {
 		{"GET with 64 MiB multipart", "GET", "/search", multipartType, large, 64 << 20, 0, 415, false},
 		{"HEAD with multipart", "HEAD", "/search", multipartType, large, 0, 0, 415, false},
 		{"OPTIONS with multipart", "OPTIONS", "/search", multipartType, large, 0, 0, 415, false},
+		{"TRACE with multipart", "TRACE", "/search", multipartType, large, 0, 0, 415, false},
 		{"GET with malformed multipart type", "GET", "/search", "multipart/form-data;boundary=x;boundary=y", large, 0, 0, 415, false},
 		{"exempt GET with multipart", "GET", "/notify", multipartType, large, 0, 0, 415, false},
 		{"GET with streamed oversized body", "GET", "/drain", "text/plain",
@@ -372,6 +373,86 @@ func TestBodyError(t *testing.T) {
 			t.Errorf("OnBodyError calls = %d, OnFailure calls = %d; want 0 and 1", calls, failures)
 		}
 	})
+}
+
+// A refused request still carries its original body when the hook runs. A hook
+// that parses it (FormValue spools multipart files to disk) or reads it must
+// get an empty body, on both protocol versions.
+func TestBodyErrorHookGetsEmptyBody(t *testing.T) {
+	const multipartType = "multipart/form-data; boundary=test-boundary"
+	const head = "--test-boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"body.txt\"\r\n\r\n"
+	const tail = "\r\n--test-boundary--\r\n"
+	large := func() io.Reader {
+		return io.MultiReader(strings.NewReader(head),
+			io.LimitReader(repeatedByte('x'), (64<<20)-int64(len(head)+len(tail))), strings.NewReader(tail))
+	}
+	type hook struct {
+		name string
+		fn   func(w http.ResponseWriter, r *http.Request, status int) // nil means the default response
+	}
+	hooks := []hook{
+		{"default response", nil},
+		{"hook calls FormValue", func(w http.ResponseWriter, r *http.Request, status int) {
+			fmt.Fprintf(w, "q=%s file=%t", r.FormValue("q"), r.MultipartForm != nil && len(r.MultipartForm.File) != 0)
+		}},
+		{"hook reads the body", func(w http.ResponseWriter, r *http.Request, status int) {
+			body, err := io.ReadAll(r.Body)
+			fmt.Fprintf(w, "body=%d err=%v", len(body), err)
+		}},
+	}
+	for _, proto := range []int{1, 2} {
+		for _, tc := range []struct {
+			name, method, mediaType string
+			status                  int
+		}{
+			{"POST with declared 64 MiB multipart", "POST", multipartType, 413},
+			{"GET with declared 64 MiB multipart", "GET", multipartType, 415},
+		} {
+			for _, h := range hooks {
+				t.Run(fmt.Sprintf("HTTP/%d %s %s", proto, tc.name, h.name), func(t *testing.T) {
+					tmp := t.TempDir()
+					t.Setenv("TMPDIR", tmp)
+					p := mustNew(t, csrf.Config{Origin: ownOrigin, OnBodyError: h.fn,
+						Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))})
+					observations := make(chan bodyObservation, 1)
+					s := httptest.NewUnstartedServer(observeBody(func(w http.ResponseWriter, r *http.Request) {
+						t.Error("next called for a refused request")
+					}, p, observations))
+					s.EnableHTTP2 = proto == 2
+					s.StartTLS()
+					t.Cleanup(s.Close)
+
+					req := request(t, tc.method, s.URL+"/form?q=a", large())
+					req.ContentLength = 64 << 20
+					req.Header.Set("Content-Type", tc.mediaType)
+					req.Header.Set("Origin", ownOrigin)
+					resp, body := send(t, s.Client(), req)
+					obs := <-observations
+					if resp.ProtoMajor != proto {
+						t.Fatalf("response protocol = HTTP/%d, want HTTP/%d", resp.ProtoMajor, proto)
+					}
+					wantStatus := http.StatusOK // the hooks above write no status
+					if h.fn == nil {
+						wantStatus = tc.status
+					}
+					if resp.StatusCode != wantStatus || obs.read != 0 {
+						t.Errorf("status=%d, bytes read=%d; want status %d and none read", resp.StatusCode, obs.read, wantStatus)
+					}
+					switch h.name {
+					case "hook calls FormValue":
+						if body != "q=a file=false" {
+							t.Errorf("hook saw %q", body)
+						}
+					case "hook reads the body":
+						if body != "body=0 err=<nil>" {
+							t.Errorf("hook saw %q", body)
+						}
+					}
+					assertTempEntries(t, tmp, false)
+				})
+			}
+		}
+	}
 }
 
 func TestExempt(t *testing.T) {

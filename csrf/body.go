@@ -157,7 +157,13 @@ func requestMediaType(r *http.Request) (string, error) {
 // bodyError answers a refusal made by the kit itself before any token check.
 // The warning is logged whether or not OnBodyError replaces the response, and
 // never includes a request value other than the path (no query, no headers).
+//
+// The refused body is still attached on the declared-length 413 and the 415
+// paths. It is replaced with an empty one first, so a hook that calls
+// Request.FormValue or ParseMultipartForm reads and spools nothing.
 func (p *Protect) bodyError(w http.ResponseWriter, r *http.Request, status int) {
+	r.Body = http.NoBody
+	r.Form, r.PostForm, r.MultipartForm = nil, nil, nil
 	p.logger.WarnContext(r.Context(), "csrf: request body refused",
 		"status", status, "method", r.Method, "path", r.URL.Path)
 	if p.onBodyErr != nil {

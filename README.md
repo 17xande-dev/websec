@@ -191,8 +191,8 @@ The wrapper applies these rules in order:
 The kit's own refusals (413, 415 and 400) log one warning with the status,
 method and path (never the query, headers or body) and answer in plain text with
 `Cache-Control: no-store`. Set `Config.OnBodyError` to write the response
-yourself; the warning is still logged. The hook must not read the body. It is
-not called for CSRF failures (`OnFailure`) or the oversized-upload hand-off
+yourself; the warning is still logged. The hook receives an empty body and no
+parsed form fields (the query string stays readable). It is not called for CSRF failures (`OnFailure`) or the oversized-upload hand-off
 (`Oversized`). For example, to show a refusal inside an htmx target:
 
 ```go
