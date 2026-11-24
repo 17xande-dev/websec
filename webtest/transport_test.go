@@ -1,14 +1,11 @@
 package webtest
 
 import (
-	"bufio"
-	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestLocationByTransport(t *testing.T) {
@@ -79,35 +76,11 @@ func TestLocationByTransport(t *testing.T) {
 			})
 			t.Run("raw connection", func(t *testing.T) {
 				// Verify which bytes reached the wire, independently of Go's header reader.
-				if got := rawLocationLine(t, srv.Listener.Addr().String()); got != "Location: "+tt.wire+"\r\n" {
-					t.Errorf("Location line = %q; want %q", got, "Location: "+tt.wire+"\r\n")
+				r := Raw(t, srv.Listener.Addr().String(), rawGet())
+				if got := r.Values("location"); !slices.Equal(got, []string{tt.wire}) {
+					t.Errorf("Location values = %q; want [%q]", got, tt.wire)
 				}
 			})
 		})
-	}
-}
-
-func rawLocationLine(t *testing.T, addr string) string {
-	t.Helper()
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: app.example\r\nConnection: close\r\n\r\n"); err != nil {
-		t.Fatal(err)
-	}
-	reader := bufio.NewReader(conn)
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			t.Fatal(err)
-		}
-		if line == "\r\n" || strings.HasPrefix(line, "Location: ") {
-			return line
-		}
 	}
 }

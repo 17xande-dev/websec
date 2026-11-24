@@ -15,6 +15,7 @@ import "github.com/17xande-dev/websec"
 | `websec/cookie` | Host-only session cookies |
 | `websec/session` | Server-side session lifetime and last-seen write policy |
 | `websec/session/sessiontest` | Session store conformance tests |
+| `websec/webtest` | HTTP integration-test clients, assertions and probes |
 
 ## SafeRedirect
 
@@ -605,9 +606,75 @@ NotApplicable: map[sessiontest.Case]string{
 Every case has a constant (`CaseFresh`, `CaseAbsolute`, `CaseIdle`, ...) whose
 value is the subtest name that `go test` prints.
 
+## webtest
+
+Integration-test helpers: a browser-like client, forms and CSRF tokens, route
+sweeps, cookie checks, and body, temporary-file and log probes. Import
+`github.com/17xande-dev/websec/webtest` only from `_test.go` files.
+
+```go
+c := webtest.New(t, app, "https://app.example") // in-process
+// Or use webtest.NewServer(t, srv) for a real connection.
+c.Get("/ready").WantStatus(http.StatusNoContent)
+```
+
+The client keeps cookies, sends the browser's `Origin` on unsafe requests,
+and neither follows redirects nor parses `Location` unless explicitly asked
+to follow. Go's `http.Client` fails on a Location such as `"/\t/evil.example"`
+before a test can see it; a browser reads that value as `//evil.example`.
+In-process tests see what the handler wrote. Over a connection Go's reader
+refuses some bytes, and the server turns CR/LF into spaces.
+
+The client does not send `Sec-Fetch-Site` unless asked: `same-origin` makes
+nosurf skip its Origin comparison, which could hide a wrong trusted origin.
+
+```go
+res := c.SignIn("/login", url.Values{"email": {"owner@app.example"}, "password": {pw}})
+res.WantRedirect(http.StatusSeeOther, "/")
+c.Page("/items/new").Form("/items").Set("title", "A").Submit().WantStatus(http.StatusSeeOther)
+```
+
+Sweep every protected route with its own method. `Run` fails on 2xx, 404, 405
+and 5xx whatever `Refused` says, and on fewer protected routes than `Min`:
+
+```go
+webtest.Sweep{
+	Routes:    webtest.Routes(t, protectedPatterns, map[string]string{"id": "1"}),
+	Min:       20,
+	Client:    func() *webtest.Client { return webtest.New(t, app, "https://app.example") },
+	TokenPage: "/login",
+	Refused:   webtest.ByMethod(webtest.RedirectsTo("/login?next="), webtest.Status(http.StatusUnauthorized)),
+}.Run(t)
+```
+
+`WantCookie` checks the named response cookie against literal attributes as
+well as the browser's prefix rules. Write the expected wire name (such as
+`"__Host-session"`) and redirect Location by hand. An expectation computed by
+the function under test can agree with the same bug.
+
+Use `NewCountingReader(webtest.Filler(n))` to count body reads without
+allocating the upload, and `Streamed()` for an unknown length. A zero or
+exact read-count assertion belongs in-process: on the wire `N()` counts what
+the client pulled from the source, not necessarily what the handler read.
+Call the check returned by `NoTempFiles(t)` after the request. It detects
+leftovers, not files already removed, and uses `t.Setenv`, so do not use it
+with `t.Parallel` or in a parallel ancestor's subtest.
+
+`Logger` captures Debug and higher slog records as JSON. Wait for any
+asynchronous logging before calling `NoSecrets` with the captured text, a
+literal marker from the expected log record, and secrets of at least 12 bytes.
+It rejects raw and encoded forms anywhere in the log. See the
+[upload refusal test](webtest/example_test.go) for a complete example.
+
+Use `Raw` with a test server's TCP address and a verbatim request containing
+`Connection: close` to inspect header bytes Go's HTTP reader rejects. It
+cannot undo CR/LF replacement already performed by the server. Use
+`HostileRedirects()` as inputs and assert a literal fallback Location.
+
 ## Changes
 
 - **Unreleased**
+  - `webtest` adds integration-test clients, assertions and probes.
   - `csrf.ValidateOrigin` and `csrf.New` refuse Unicode hosts and noncanonical
     IPv4 and IPv6 spellings that browsers don't use in `Origin` headers.
     Upgrading: an `Origin` written in one of those spellings (for example
