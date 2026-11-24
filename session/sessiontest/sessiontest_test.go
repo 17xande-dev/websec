@@ -457,13 +457,25 @@ func TestCallbackSkipFailsParent(t *testing.T) {
 	}
 }
 
-func TestVisibleSkips(t *testing.T) {
+func TestNotApplicableIsReported(t *testing.T) {
 	for _, tc := range []struct {
 		mode     string
 		messages []string
 	}{
-		{"opt-out", []string{"not applicable: no disabled accounts", "not applicable: no local password", "not applicable: no administrative revoke"}},
-		{"idle-off", []string{"idle off: idle and touch cases not applicable", "--- SKIP: TestConformanceChild/idle", "--- SKIP: TestConformanceChild/touch", "--- PASS: TestConformanceChild/sweep"}},
+		{"opt-out", []string{
+			"--- PASS: TestConformanceChild/disable (",
+			"--- PASS: TestConformanceChild/password-change (",
+			"--- PASS: TestConformanceChild/revoke-user (",
+			"sessiontest: not applicable: no disabled accounts",
+			"sessiontest: not applicable: no local password",
+			"sessiontest: not applicable: no administrative revoke",
+		}},
+		{"idle-off", []string{
+			"idle off: idle and touch cases not applicable",
+			"--- PASS: TestConformanceChild/idle (",
+			"--- PASS: TestConformanceChild/touch (",
+			"--- PASS: TestConformanceChild/sweep (",
+		}},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			out := runChild(t, tc.mode, false)
@@ -471,6 +483,12 @@ func TestVisibleSkips(t *testing.T) {
 				if !strings.Contains(out, message) {
 					t.Errorf("missing %q:\n%s", message, out)
 				}
+			}
+			if strings.Contains(out, "--- SKIP") {
+				t.Errorf("not-applicable cases must not be reported as skips:\n%s", out)
+			}
+			if tc.mode == "idle-off" && strings.Count(out, "sessiontest: not applicable: idle expiry is off") != 2 {
+				t.Errorf("want the reason logged for both idle and touch:\n%s", out)
 			}
 		})
 	}

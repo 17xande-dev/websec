@@ -38,8 +38,9 @@ type Harness struct {
 	TouchEvery     time.Duration                   // the store's touch interval; zero means session.TouchEvery
 	RevokeUser     func(t *testing.T, user string) // administrative or directory revocation
 
-	// NotApplicable may skip disable, password-change, or revoke-user with
-	// a non-blank reason, and only when the corresponding callback is nil.
+	// NotApplicable marks disable, password-change, or revoke-user as passing
+	// without running. The non-blank reason is logged, and the corresponding
+	// callback must be nil.
 	NotApplicable map[Case]string
 }
 
@@ -53,11 +54,11 @@ const (
 	CaseFresh Case = "fresh"
 	// CaseAbsolute checks the absolute lifetime.
 	CaseAbsolute Case = "absolute"
-	// CaseIdle checks the idle lifetime. It is skipped with IdleOff and
-	// cannot be listed in NotApplicable.
+	// CaseIdle checks the idle lifetime. It is not applicable with IdleOff
+	// and cannot be listed in NotApplicable.
 	CaseIdle Case = "idle"
-	// CaseTouch checks the last-seen refresh interval. It is skipped with
-	// IdleOff and cannot be listed in NotApplicable.
+	// CaseTouch checks the last-seen refresh interval. It is not applicable
+	// with IdleOff and cannot be listed in NotApplicable.
 	CaseTouch Case = "touch"
 	// CaseMiss checks that unknown, malformed, alternately encoded and
 	// absolute-expired tokens miss.
@@ -181,10 +182,12 @@ func Run(t *testing.T, h Harness) {
 		t.Run(string(tc.name), func(sub *testing.T) {
 			now := time.Now()
 			if l.IdleOff && (tc.name == CaseIdle || tc.name == CaseTouch) {
-				sub.Skip("idle off")
+				sub.Log("sessiontest: not applicable: idle expiry is off")
+				return
 			}
 			if reason, ok := h.NotApplicable[tc.name]; ok {
-				sub.Skipf("not applicable: %s", reason)
+				sub.Logf("sessiontest: not applicable: %s", reason)
+				return
 			}
 			sub.Cleanup(func() {
 				if sub.Skipped() {

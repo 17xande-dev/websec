@@ -420,14 +420,16 @@ minutes. If idle expiry is enabled, the idle limit must be at least five
 minutes, at least four times the touch interval, and at least five minutes
 shorter than the absolute limit. Set `Harness.TouchEvery` to the store's
 interval if it is longer than the default minute. With `IdleOff`, leave
-`TouchEvery` unset and omit `LastSeen`; the suite reports why it skips idle
-and touch.
+`TouchEvery` unset and omit `LastSeen`; idle and touch pass without running
+and log why (`go test -v` shows the reason).
 
 `ChangePassword` returns the token still valid for the current browser:
 the current token, a rotated token, or `""` if all the user's sessions
 ended. Only `sessiontest.CaseDisable`, `CasePasswordChange` and
 `CaseRevokeUser` can be opted out. Leave the callback nil and give a reason in
-`NotApplicable`; the reason is visible in `go test -v`:
+`NotApplicable`. Those cases pass without running and log why
+(`go test -v` shows the reason); a case your callback skips with `t.Skip`
+fails the suite.
 
 ```go
 NotApplicable: map[sessiontest.Case]string{
