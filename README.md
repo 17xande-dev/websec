@@ -499,6 +499,20 @@ the default `TouchEvery` (one minute), stored activity can lag real activity
 by up to a minute, so throttling can make idle expiry arrive up to a minute
 early.
 
+A sweep deletes rows at or past either enabled deadline, counting activity
+before creation as creation:
+
+```sql
+DELETE FROM sessions
+WHERE created_at <= :now - <absolute>
+   OR max(created_at, last_seen) <= :now - <idle>
+```
+
+Omit the idle term with `IdleOff`; use `GREATEST` instead of `max` in
+Postgres. Judge idle expiry with the same clock that wrote `last_seen`:
+if Go wrote the timestamp, bind `:now` from that clock rather than using
+the database's `now()`.
+
 ## Session store conformance (`websec/session/sessiontest`)
 
 In a `_test.go` file, point the suite at an isolated test database running
