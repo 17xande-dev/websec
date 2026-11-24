@@ -459,6 +459,49 @@ func TestBodyErrorHookGetsEmptyBody(t *testing.T) {
 	}
 }
 
+// An outer layer may already have parsed the form (a method override, say).
+// A refusal must not hand those fields to the hook either.
+func TestBodyErrorHookGetsNoParsedFields(t *testing.T) {
+	const multipartType = "multipart/form-data; boundary=test-boundary"
+	for _, tc := range []struct {
+		name, method, mediaType string
+		body                    string
+		status                  int
+	}{
+		{"declared oversized", "POST", urlencoded, strings.Repeat("x", 1<<10+1), 413},
+		{"multipart not allowed", "POST", multipartType, "--test-boundary--\r\n", 415},
+		{"safe method multipart", "GET", multipartType, "--test-boundary--\r\n", 415},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seen := make(chan string, 1)
+			p := mustNew(t, csrf.Config{Origin: ownOrigin, MaxBody: 1 << 10,
+				Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
+				OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
+					body, _ := io.ReadAll(r.Body)
+					seen <- fmt.Sprintf("status=%d form=%d postform=%d multipart=%t value=%q body=%d",
+						status, len(r.Form), len(r.PostForm), r.MultipartForm != nil, r.FormValue("planted"), len(body))
+				}})
+			outer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r.Form = url.Values{"planted": {"secret"}}
+				r.PostForm = url.Values{"planted": {"secret"}}
+				r.MultipartForm = &multipart.Form{Value: map[string][]string{"planted": {"secret"}}}
+				p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					t.Error("next called for a refused request")
+				})).ServeHTTP(w, r)
+			})
+			s, _ := server(t, outer)
+			req := request(t, tc.method, s.URL+"/form", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", tc.mediaType)
+			req.Header.Set("Origin", ownOrigin)
+			send(t, s.Client(), req)
+			want := fmt.Sprintf("status=%d form=0 postform=0 multipart=false value=\"\" body=0", tc.status)
+			if got := <-seen; got != want {
+				t.Errorf("hook saw %s; want %s", got, want)
+			}
+		})
+	}
+}
+
 func TestExempt(t *testing.T) {
 	const raw = "field=raw+text"
 	const capBytes = int64(len(raw))
@@ -641,6 +684,8 @@ func TestBodyLimitByMediaType(t *testing.T) {
 				return csrf.BodyLimit{MaxBytes: 64 << 20}
 			case "/negative":
 				return csrf.BodyLimit{MaxBytes: -1, MultipartMaxBytes: -1, MaxMemory: -1}
+			case "/small-multipart":
+				return csrf.BodyLimit{MaxBytes: 512 << 10, MultipartMaxBytes: 64 << 10}
 			case "/clamped":
 				return csrf.BodyLimit{MultipartMaxBytes: 1 << 20, MaxMemory: 8 << 20}
 			}
@@ -682,6 +727,8 @@ func TestBodyLimitByMediaType(t *testing.T) {
 		{"URL-encoded within a larger MaxBytes", "/medium", urlencoded, 300 << 10, 300 << 10, 204, false, false},
 		{"URL-encoded over a larger MaxBytes", "/medium", urlencoded, 512<<10 + 1, 0, 413, false, false},
 		{"multipart ignores MaxBytes", "/medium", "", 1 << 10, 0, 415, false, false},
+		{"multipart capped at its own smaller value", "/small-multipart", "", 100 << 10, 0, 413, false, false},
+		{"multipart within its own smaller value", "/small-multipart", "", 32 << 10, 32 << 10, 204, false, false},
 		{"MaxBytes of exactly 64 MiB", "/max-64", urlencoded, 1 << 10, 1 << 10, 204, false, false},
 		{"MaxBytes above 64 MiB", "/too-large", urlencoded, 1 << 10, 0, 500, false, false},
 		{"MaxBytes above 64 MiB for multipart", "/too-large", "", 1 << 10, 0, 500, false, false},
