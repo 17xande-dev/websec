@@ -194,11 +194,13 @@ func (p *Protect) bodyError(w http.ResponseWriter, r *http.Request, status int) 
 	}
 	p.logger.WarnContext(r.Context(), "csrf: request body refused",
 		"status", status, "method", r.Method, "path", r.URL.Path)
+	// Set before the hook so a hook that writes a cacheable status is not
+	// cached; it may still override the header.
+	w.Header().Set("Cache-Control", "no-store")
 	if p.onBodyErr != nil {
 		p.onBodyErr(w, r, status)
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store")
 	http.Error(w, http.StatusText(status), status)
 }
 

@@ -328,8 +328,9 @@ func TestBodyError(t *testing.T) {
 				if len(calls) != 1 || <-calls != tc.status {
 					t.Fatalf("hook was not called exactly once with status %d", tc.status)
 				}
-				if resp.StatusCode != 422 || body != fmt.Sprintf("refused: %d", tc.status) || resp.Header.Get("HX-Retarget") != "#errors" {
-					t.Errorf("hook response = %d %q", resp.StatusCode, body)
+				if resp.StatusCode != 422 || body != fmt.Sprintf("refused: %d", tc.status) || resp.Header.Get("HX-Retarget") != "#errors" ||
+					resp.Header.Get("Cache-Control") != "no-store" {
+					t.Errorf("hook response = %d %q, Cache-Control=%q", resp.StatusCode, body, resp.Header.Get("Cache-Control"))
 				}
 				assertOneWarning(t, &logs, tc)
 			})
