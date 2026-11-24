@@ -139,6 +139,40 @@ func TestOrigins(t *testing.T) {
 	}
 }
 
+func TestInsecureOrigins(t *testing.T) {
+	// In plain-HTTP development the TLS answer must be false: nosurf then
+	// compares http://Host. A wrong answer would be hidden by the allowlist's
+	// own http:// origin, so use a Host the allowlist does not contain.
+	p := mustNew(t, csrf.Config{Origin: "http://app.example", Insecure: true})
+	s := httptest.NewServer(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, csrf.Token(r))
+	})))
+	client := cookieClient(t, s)
+	token, cookie := formToken(t, s, client, "/")
+	for _, tc := range []struct {
+		name, host, origin string
+		status             int
+	}{
+		{"request's own http host", "other.example", "http://other.example", http.StatusOK},
+		{"https origin for an http host", "other.example", "https://other.example", http.StatusForbidden},
+		{"configured origin", "", "http://app.example", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := request(t, http.MethodPost, s.URL+"/form", strings.NewReader(url.Values{csrf.FieldName: {token}}.Encode()))
+			req.Header.Set("Content-Type", urlencoded)
+			req.Header.Set("Origin", tc.origin)
+			if tc.host != "" {
+				req.Host = tc.host
+				// The jar keys the cookie to the connection's host.
+				req.AddCookie(cookie)
+			}
+			if resp, _ := send(t, client, req); resp.StatusCode != tc.status {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tc.status)
+			}
+		})
+	}
+}
+
 func TestCookie(t *testing.T) {
 	for _, tc := range []struct {
 		name, path, bareName, cookieName string

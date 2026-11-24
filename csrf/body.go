@@ -32,6 +32,14 @@ func Oversized(r *http.Request) bool {
 func (p *Protect) limitBody(next, check http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if safeMethod(r.Method) {
+			// Browsers send no body on these methods, but Request.FormValue
+			// parses a multipart one for any method and spools its files to
+			// disk. Bound it, and refuse the one type that parses.
+			if mediaType, _ := requestMediaType(r); mediaType == "multipart/form-data" {
+				p.bodyError(w, r, http.StatusUnsupportedMediaType)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, p.maxBody)
 			if p.isExempt(r) {
 				next.ServeHTTP(w, r)
 			} else {
@@ -58,12 +66,12 @@ func (p *Protect) limitBody(next, check http.Handler) http.Handler {
 					return
 				}
 			}
-			bodyError(w, http.StatusRequestEntityTooLarge)
+			p.bodyError(w, r, http.StatusRequestEntityTooLarge)
 			return
 		}
 		mediaType, mediaErr := requestMediaType(r)
 		if mediaType == "multipart/form-data" && !limit.Multipart {
-			bodyError(w, http.StatusUnsupportedMediaType)
+			p.bodyError(w, r, http.StatusUnsupportedMediaType)
 			return
 		}
 
@@ -102,7 +110,7 @@ func (p *Protect) limitBody(next, check http.Handler) http.Handler {
 			if errors.As(err, &tooLarge) {
 				status = http.StatusRequestEntityTooLarge
 			}
-			bodyError(w, status)
+			p.bodyError(w, r, status)
 			return
 		}
 		check.ServeHTTP(w, r)
@@ -146,6 +154,16 @@ func requestMediaType(r *http.Request) (string, error) {
 	return mediaType, err
 }
 
-func bodyError(w http.ResponseWriter, status int) {
+// bodyError answers a refusal made by the kit itself before any token check.
+// The warning is logged whether or not OnBodyError replaces the response, and
+// never includes a request value other than the path (no query, no headers).
+func (p *Protect) bodyError(w http.ResponseWriter, r *http.Request, status int) {
+	p.logger.WarnContext(r.Context(), "csrf: request body refused",
+		"status", status, "method", r.Method, "path", r.URL.Path)
+	if p.onBodyErr != nil {
+		p.onBodyErr(w, r, status)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
 	http.Error(w, http.StatusText(status), status)
 }

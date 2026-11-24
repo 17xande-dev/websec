@@ -2,10 +2,14 @@ package csrf_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/17xande-dev/websec/csrf"
@@ -20,12 +24,17 @@ func TestOversizedUpload(t *testing.T) {
 	t.Setenv("TMPDIR", tmp)
 
 	mux := http.NewServeMux()
+	var logs logBuffer
 	conf := csrf.Config{
 		Origin: ownOrigin,
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
 		Limit: func(r *http.Request) csrf.BodyLimit {
 			limit := csrf.BodyLimit{MaxBytes: capBytes, Multipart: true, MaxMemory: 1024}
+			if r.Pattern == "POST /no-multipart" {
+				limit.Multipart = false
+			}
 			switch r.Pattern {
-			case "POST /upload", "POST /exempt", "POST /no-renderer":
+			case "POST /upload", "POST /exempt", "POST /no-renderer", "POST /no-multipart", "POST /preparsed":
 				limit.PassOversized = func(r *http.Request) bool {
 					if r.ContentLength <= capBytes {
 						t.Error("PassOversized called without a declared oversized body")
@@ -38,7 +47,7 @@ func TestOversizedUpload(t *testing.T) {
 		},
 		Exempt: func(r *http.Request) bool { return r.Pattern == "POST /exempt" },
 		Oversized: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !csrf.Oversized(r) || r.Body != http.NoBody || r.MultipartForm != nil {
+			if !csrf.Oversized(r) || r.Body != http.NoBody || r.MultipartForm != nil || len(r.PostForm) != 0 {
 				t.Error("refusal handler did not receive the oversized marker and an empty body")
 			}
 			assertTempEntries(t, tmp, false)
@@ -83,6 +92,15 @@ func TestOversizedUpload(t *testing.T) {
 	mux.Handle("POST /upload", protected)
 	mux.Handle("POST /ordinary", protected)
 	mux.Handle("POST /exempt", protected)
+	mux.Handle("POST /no-multipart", protected)
+	// An outer layer that already parsed a form must not leak it to the
+	// refusal handler.
+	mux.Handle("POST /preparsed", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Form = url.Values{"field": {"value"}}
+		r.PostForm = url.Values{"field": {"value"}}
+		r.MultipartForm = &multipart.Form{}
+		protected(w, r)
+	}))
 	conf.Oversized = nil
 	mux.Handle("POST /no-renderer", observe(mustNew(t, conf).Handler(next)))
 	s, client := server(t, mux)
@@ -92,7 +110,7 @@ func TestOversizedUpload(t *testing.T) {
 	for _, tc := range []struct {
 		name, path, session                       string
 		origin, headerToken                       string
-		wantText                                  string
+		wantText, wantWarn                        string
 		status                                    int
 		wantRead                                  int64
 		atLimit, streamed                         bool
@@ -104,9 +122,11 @@ func TestOversizedUpload(t *testing.T) {
 		{name: "session without upload permission", session: "viewer", status: 413, wantText: refused},
 		{name: "invalid header token", session: "uploader", headerToken: "invalid", status: 403, wantText: nosurf.ErrBadToken.Error() + "\n", close: true},
 		{name: "empty header token", session: "uploader", emptyHeader: true, status: 403, wantText: nosurf.ErrBadToken.Error() + "\n", close: true},
-		{name: "valid header token", session: "uploader", headerToken: token, status: 403, wantText: "Forbidden\n", close: true},
+		{name: "valid header token", session: "uploader", headerToken: token, status: 403, wantText: "Forbidden\n", wantWarn: "oversized request with a header token", close: true},
 		{name: "ordinary route", path: "/ordinary", session: "uploader", status: 413, wantText: refused},
 		{name: "exempt route", path: "/exempt", session: "uploader", status: 413, wantText: refused},
+		{name: "multipart not allowed on route", path: "/no-multipart", session: "uploader", status: 413, wantText: refused},
+		{name: "outer layer parsed the form", path: "/preparsed", session: "uploader", status: 422, wantText: friendly, close: true},
 		{name: "missing renderer", path: "/no-renderer", session: "uploader", status: 413, wantText: refused},
 		{name: "not multipart", session: "uploader", nonMultipart: true, status: 413, wantText: refused},
 		{name: "streamed oversized", session: "uploader", streamed: true, status: 413, wantText: refused, wantRead: capBytes + 1},
@@ -154,8 +174,22 @@ func TestOversizedUpload(t *testing.T) {
 			} else {
 				req.AddCookie(&http.Cookie{Name: "session", Value: tc.session})
 			}
+			logs.mu.Lock()
+			logs.buf.Reset()
+			logs.mu.Unlock()
 			resp, text := send(t, doer, req)
 			obs := <-observations
+			if tc.wantWarn != "" {
+				raw := logs.String()
+				var record map[string]any
+				if json.Unmarshal([]byte(raw), &record) != nil || record["level"] != "WARN" || record["msg"] != "csrf: request refused" ||
+					record["reason"] != tc.wantWarn || record["method"] != "POST" || record["path"] != path {
+					t.Errorf("want one warning with the reason only; got %q", raw)
+				}
+				if strings.Contains(raw, token) || strings.Contains(raw, "uploader") || resp.Header.Get("Cache-Control") != "no-store" {
+					t.Error("warning disclosed a value, or the refusal can be cached")
+				}
+			}
 			if resp.StatusCode != tc.status || text != tc.wantText {
 				t.Errorf("response = %d %q; want %d %q", resp.StatusCode, text, tc.status, tc.wantText)
 			}

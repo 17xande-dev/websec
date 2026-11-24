@@ -46,7 +46,14 @@ type Config struct {
 	// other state change: the form token was not checked.
 	Oversized http.Handler
 	OnFailure http.Handler // replaces the default response, not the warning; Reason is available
-	Logger    *slog.Logger // nil means slog.Default()
+
+	// OnBodyError replaces the plain-text response for the kit's own body
+	// refusals: 413 (too large), 415 (multipart not allowed) and 400
+	// (malformed body). It does not replace the warning. It must not read the
+	// body. It is not called for token failures (see OnFailure) or for the
+	// oversized-upload hand-off (see Oversized).
+	OnBodyError func(w http.ResponseWriter, r *http.Request, status int)
+	Logger      *slog.Logger // nil means slog.Default()
 }
 
 // Protect holds a validated policy. Use New to construct it.
@@ -59,6 +66,7 @@ type Protect struct {
 	limit      func(*http.Request) BodyLimit
 	oversized  http.Handler
 	onFailure  http.Handler
+	onBodyErr  func(http.ResponseWriter, *http.Request, int)
 	logger     *slog.Logger
 }
 
@@ -116,6 +124,7 @@ func New(c Config) (*Protect, error) {
 		limit:      c.Limit,
 		oversized:  c.Oversized,
 		onFailure:  c.OnFailure,
+		onBodyErr:  c.OnBodyError,
 		logger:     c.Logger,
 	}, nil
 }
@@ -127,7 +136,10 @@ func (p *Protect) Handler(next http.Handler) http.Handler {
 		if Oversized(r) {
 			// A valid header token can pass nosurf, but cannot lift the cap
 			// or send a request with a discarded body to the normal handler.
-			bodyError(w, http.StatusForbidden)
+			p.logger.WarnContext(r.Context(), "csrf: request refused",
+				"method", r.Method, "path", r.URL.Path, "reason", "oversized request with a header token")
+			w.Header().Set("Cache-Control", "no-store")
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)

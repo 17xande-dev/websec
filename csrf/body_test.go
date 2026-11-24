@@ -2,11 +2,14 @@ package csrf_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
@@ -111,6 +114,9 @@ func TestBodyCap(t *testing.T) {
 		{"anonymous 64 MiB multipart", "POST", "/large-form", multipartType, largeAnonymous, 64 << 20, 0, 415, true},
 		{"mixed case multipart type", "POST", "/", "Multipart/Form-Data; boundary=test-boundary", strings.NewReader(head + tail), 0, 0, 415, true},
 		{"malformed multipart type", "POST", "/", "multipart/form-data;;", strings.NewReader(head + tail), 0, 0, 415, true},
+		{"duplicate boundary multipart type", "POST", "/", "multipart/form-data;boundary=x;boundary=y", strings.NewReader(head + tail), 0, 0, 415, true},
+		{"duplicate boundary mixed case type", "POST", "/", "Multipart/Form-Data;boundary=x;boundary=y", strings.NewReader(head + tail), 0, 0, 415, true},
+		{"duplicate boundary type with padding", "POST", "/", "multipart/form-data ;boundary=x;boundary=y", strings.NewReader(head + tail), 0, 0, 415, true},
 		{"PUT over cap", "PUT", "/", urlencoded, strings.NewReader(atPlusOne), 0, 0, 413, false},
 		{"PATCH over cap", "PATCH", "/", urlencoded, strings.NewReader(atPlusOne), 0, 0, 413, false},
 		{"DELETE over cap", "DELETE", "/", urlencoded, strings.NewReader(atPlusOne), 0, 0, 413, false},
@@ -163,13 +169,209 @@ func TestSafeMethods(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace} {
 		t.Run(method, func(t *testing.T) {
 			req := request(t, method, s.URL, strings.NewReader("body beyond cap"))
-			req.Header.Set("Content-Type", "multipart/form-data;;")
+			req.Header.Set("Content-Type", "text/plain")
 			resp, _ := send(t, s.Client(), req)
 			if resp.StatusCode != 204 || len(resp.Cookies()) != 1 {
 				t.Errorf("status=%d, cookies=%d; want 204 and one cookie", resp.StatusCode, len(resp.Cookies()))
 			}
 		})
 	}
+}
+
+func TestSafeMethodBody(t *testing.T) {
+	const capBytes = 256 << 10
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	p := mustNew(t, csrf.Config{
+		Origin: ownOrigin,
+		Exempt: func(r *http.Request) bool { return r.URL.Path == "/notify" },
+	})
+	observations := make(chan bodyObservation, 1)
+	s, _ := server(t, observeBody(func(w http.ResponseWriter, r *http.Request) {
+		// A handler that reads form values, as a login page reading a
+		// redirect target would, parses any multipart body.
+		_ = r.FormValue("q")
+		if r.URL.Path == "/drain" || r.URL.Path == "/notify" {
+			if _, err := io.Copy(io.Discard, r.Body); err != nil {
+				var tooLarge *http.MaxBytesError
+				if errors.As(err, &tooLarge) {
+					w.WriteHeader(http.StatusRequestEntityTooLarge)
+					return
+				}
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}, p, observations))
+	const multipartType = "multipart/form-data; boundary=test-boundary"
+	const head = "--test-boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"body.txt\"\r\n\r\n"
+	const tail = "\r\n--test-boundary--\r\n"
+	large := func() io.Reader {
+		return io.MultiReader(strings.NewReader(head),
+			io.LimitReader(repeatedByte('x'), (64<<20)-int64(len(head)+len(tail))), strings.NewReader(tail))
+	}
+	for _, tc := range []struct {
+		name, method, path, mediaType string
+		body                          func() io.Reader
+		length, maxRead               int64
+		status                        int
+		next                          bool
+	}{
+		{"GET with 64 MiB multipart", "GET", "/search", multipartType, large, 64 << 20, 0, 415, false},
+		{"HEAD with multipart", "HEAD", "/search", multipartType, large, 0, 0, 415, false},
+		{"OPTIONS with multipart", "OPTIONS", "/search", multipartType, large, 0, 0, 415, false},
+		{"GET with malformed multipart type", "GET", "/search", "multipart/form-data;boundary=x;boundary=y", large, 0, 0, 415, false},
+		{"exempt GET with multipart", "GET", "/notify", multipartType, large, 0, 0, 415, false},
+		{"GET with streamed oversized body", "GET", "/drain", "text/plain",
+			func() io.Reader { return streamed{io.LimitReader(repeatedByte('x'), 8<<20)} }, 0, capBytes + 1, 413, true},
+		{"exempt GET with streamed oversized body", "GET", "/notify", "text/plain",
+			func() io.Reader { return streamed{io.LimitReader(repeatedByte('x'), 8<<20)} }, 0, capBytes + 1, 413, true},
+		{"GET with a small body", "GET", "/drain", "text/plain",
+			func() io.Reader { return strings.NewReader("small") }, 0, 5, 204, true},
+		{"GET without a body", "GET", "/search", "", func() io.Reader { return nil }, 0, 0, 204, true},
+		{"exempt GET without a body", "GET", "/notify", "", func() io.Reader { return nil }, 0, 0, 204, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := request(t, tc.method, s.URL+tc.path+"?q=a", tc.body())
+			if tc.length != 0 {
+				req.ContentLength = tc.length
+			}
+			if tc.mediaType != "" {
+				req.Header.Set("Content-Type", tc.mediaType)
+			}
+			resp, _ := send(t, s.Client(), req)
+			obs := <-observations
+			if resp.StatusCode != tc.status || obs.next != tc.next || obs.read > tc.maxRead {
+				t.Errorf("status=%d, next=%t, bytes read=%d; want status=%d, next=%t, at most %d read",
+					resp.StatusCode, obs.next, obs.read, tc.status, tc.next, tc.maxRead)
+			}
+			assertTempEntries(t, tmp, false)
+		})
+	}
+}
+
+func TestBodyError(t *testing.T) {
+	const capBytes = 1 << 10
+	const multipartType = "multipart/form-data; boundary=test-boundary"
+	const secret = "private-value"
+	type refusal struct {
+		name, method, path, mediaType string
+		body                          io.Reader
+		status                        int
+	}
+	cases := func() []refusal {
+		return []refusal{
+			{"declared oversized", "POST", "/form", urlencoded, strings.NewReader(strings.Repeat("x", capBytes+1)), 413},
+			{"streamed oversized", "POST", "/form", urlencoded, streamed{strings.NewReader("a=" + strings.Repeat("x", capBytes+1))}, 413},
+			{"multipart not allowed", "POST", "/form", multipartType, strings.NewReader("--test-boundary--\r\n"), 415},
+			{"safe method multipart", "GET", "/form", multipartType, strings.NewReader("--test-boundary--\r\n"), 415},
+			{"malformed form", "POST", "/form", urlencoded, strings.NewReader("a=%zz"), 400},
+		}
+	}
+	do := func(t *testing.T, s *httptest.Server, tc refusal) (*http.Response, string) {
+		req := request(t, tc.method, s.URL+tc.path+"?q="+secret, tc.body)
+		req.Header.Set("Content-Type", tc.mediaType)
+		req.Header.Set("Origin", ownOrigin)
+		req.Header.Set("X-Private", secret)
+		req.Header.Set("HX-Request", "true")
+		return send(t, s.Client(), req)
+	}
+	assertOneWarning := func(t *testing.T, logs *logBuffer, tc refusal) {
+		t.Helper()
+		raw := strings.TrimSpace(logs.String())
+		var record map[string]any
+		if strings.Contains(raw, "\n") || json.Unmarshal([]byte(raw), &record) != nil ||
+			record["level"] != "WARN" || record["msg"] != "csrf: request body refused" ||
+			record["status"] != float64(tc.status) || record["method"] != tc.method || record["path"] != tc.path {
+			t.Errorf("want one warning with status, method and path; got %q", raw)
+		}
+		if strings.Contains(raw, secret) || strings.Contains(raw, "test-boundary") {
+			t.Errorf("warning disclosed a request value: %q", raw)
+		}
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
+
+	t.Run("default response", func(t *testing.T) {
+		for _, tc := range cases() {
+			t.Run(tc.name, func(t *testing.T) {
+				var logs logBuffer
+				s, _ := server(t, mustNew(t, csrf.Config{Origin: ownOrigin, MaxBody: capBytes,
+					Logger: slog.New(slog.NewJSONHandler(&logs, nil))}).Handler(next))
+				resp, body := do(t, s, tc)
+				if resp.StatusCode != tc.status || body != http.StatusText(tc.status)+"\n" ||
+					resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("HX-Refresh") != "" ||
+					resp.Header.Get("Content-Type") != "text/plain; charset=utf-8" {
+					t.Errorf("response = %d %q, Cache-Control=%q", resp.StatusCode, body, resp.Header.Get("Cache-Control"))
+				}
+				assertOneWarning(t, &logs, tc)
+			})
+		}
+	})
+
+	t.Run("hook", func(t *testing.T) {
+		for _, tc := range cases() {
+			t.Run(tc.name, func(t *testing.T) {
+				var logs logBuffer
+				calls := make(chan int, 2)
+				s, _ := server(t, mustNew(t, csrf.Config{Origin: ownOrigin, MaxBody: capBytes,
+					Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+					OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) {
+						calls <- status
+						if r.Header.Get("HX-Request") == "true" {
+							w.Header().Set("HX-Retarget", "#errors")
+							w.Header().Set("HX-Reswap", "innerHTML")
+						}
+						w.WriteHeader(http.StatusUnprocessableEntity)
+						fmt.Fprintf(w, "refused: %d", status)
+					}}).Handler(next))
+				resp, body := do(t, s, tc)
+				if len(calls) != 1 || <-calls != tc.status {
+					t.Fatalf("hook was not called exactly once with status %d", tc.status)
+				}
+				if resp.StatusCode != 422 || body != fmt.Sprintf("refused: %d", tc.status) || resp.Header.Get("HX-Retarget") != "#errors" {
+					t.Errorf("hook response = %d %q", resp.StatusCode, body)
+				}
+				assertOneWarning(t, &logs, tc)
+			})
+		}
+	})
+
+	t.Run("not called for token failures or the oversized hand-off", func(t *testing.T) {
+		var calls, failures int
+		s, _ := server(t, mustNew(t, csrf.Config{
+			Origin: ownOrigin, MaxBody: capBytes,
+			Limit: func(*http.Request) csrf.BodyLimit {
+				return csrf.BodyLimit{MaxBytes: capBytes, Multipart: true,
+					PassOversized: func(*http.Request) bool { return true }}
+			},
+			Oversized: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "choose a smaller file", http.StatusUnprocessableEntity)
+			}),
+			OnFailure: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				failures++
+				w.WriteHeader(http.StatusForbidden)
+			}),
+			OnBodyError: func(w http.ResponseWriter, r *http.Request, status int) { calls++ },
+			Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		}).Handler(next))
+		for _, tc := range []struct {
+			name, mediaType string
+			body            string
+			status          int
+		}{
+			{"missing token", urlencoded, "a=b", 403},
+			{"oversized hand-off", multipartType, strings.Repeat("x", capBytes+1), 422},
+		} {
+			req := request(t, "POST", s.URL+"/form", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", tc.mediaType)
+			req.Header.Set("Origin", ownOrigin)
+			if resp, _ := send(t, s.Client(), req); resp.StatusCode != tc.status {
+				t.Errorf("%s: status = %d, want %d", tc.name, resp.StatusCode, tc.status)
+			}
+		}
+		if calls != 0 || failures != 1 {
+			t.Errorf("OnBodyError calls = %d, OnFailure calls = %d; want 0 and 1", calls, failures)
+		}
+	})
 }
 
 func TestExempt(t *testing.T) {
