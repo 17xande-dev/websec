@@ -7,9 +7,9 @@
 // follows redirects, so tests can assert the literal Location. Use Raw
 // when the standard HTTP reader would reject bytes on the wire.
 //
-// Build a Client inside the test that makes assertions; never share one
-// across t.Run subtests. Assertions report to the testing.TB the client
-// was built with.
+// Use [Client.With] to bind a client to a subtest while sharing its cookies.
+// Make assertions on the bound client and the responses, pages and forms
+// it creates. Keep calls that can fail the test on that test's goroutine.
 //
 // The probes also check temporary-file leftovers and captured logs. Use
 // literal expectations rather than deriving them from the code under test.

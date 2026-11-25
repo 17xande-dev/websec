@@ -26,6 +26,11 @@ type Response struct {
 // handlers should use Header.Set or Header.Add to write the canonical key.
 func (r *Response) Location() string {
 	r.t.Helper()
+	return r.location(r.t)
+}
+
+func (r *Response) location(t testing.TB) string {
+	t.Helper()
 	values := r.Header.Values("Location")
 	switch len(values) {
 	case 0:
@@ -33,7 +38,7 @@ func (r *Response) Location() string {
 	case 1:
 		return values[0]
 	default:
-		r.t.Fatalf("%s: multiple Location values: %q", r.summary(), values)
+		t.Fatalf("%s: multiple Location values: %q", r.summary(), values)
 		return ""
 	}
 }

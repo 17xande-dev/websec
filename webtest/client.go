@@ -15,8 +15,8 @@ import (
 
 // Client sends HTTP requests with a cookie jar and an Origin on unsafe
 // methods by default. It does not follow redirects or parse Location headers.
-// Build it inside the test that makes assertions; never share it across
-// t.Run subtests. Assertions report to the testing.TB given at construction.
+// Call methods that can fail the test only from the goroutine running the
+// test the client is bound to. Use With to bind a client to a subtest.
 type Client struct {
 	t         testing.TB
 	base      *url.URL
@@ -62,6 +62,19 @@ func newClient(t testing.TB, origin string, transport http.RoundTripper, opts []
 		t: t, base: base, origin: base.Scheme + "://" + base.Host, jar: jar,
 		transport: transport, defaults: slices.Clone(opts),
 	}
+}
+
+// With returns a client bound to t for assertions and contexts on requests it
+// creates. It shares c's cookie jar, transport, origin and default options
+// without changing c's test binding.
+//
+// Parallel subtests can each call With and use their own bound client, provided
+// any shared handler and custom options support concurrent requests. Cookie
+// changes are visible to all clients sharing the jar.
+func (c *Client) With(t testing.TB) *Client {
+	out := *c
+	out.t = t
+	return &out
 }
 
 // Get sends a GET request for path.
@@ -142,7 +155,7 @@ func (c *Client) Follow(r *Response) *Response {
 	if r.Status < 300 || r.Status >= 400 {
 		c.t.Fatalf("%s: cannot follow a non-3xx response", r.summary())
 	}
-	location := r.Location()
+	location := r.location(c.t)
 	if location == "" {
 		c.t.Fatalf("%s: cannot follow without a Location", r.summary())
 	}

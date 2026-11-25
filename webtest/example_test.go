@@ -29,6 +29,20 @@ func TestSweepAndSignInExample(t *testing.T) {
 	c.Get("/admin").WantStatus(http.StatusOK)
 }
 
+func TestClientWithExample(t *testing.T) {
+	const origin = "https://app.example"
+	c := webtest.New(t, csrfFixture(t, origin, false), origin)
+	c.SignIn("/login", url.Values{"password": {"fixture-password"}}).
+		WantRedirect(http.StatusSeeOther, "/admin")
+
+	for _, name := range []string{"overview", "details"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c.With(t).Get("/admin?view=" + name).WantStatus(http.StatusOK)
+		})
+	}
+}
+
 func TestUploadRefusalExample(t *testing.T) {
 	const secret = "example-upload-key"
 	logger, logs := webtest.Logger(t)

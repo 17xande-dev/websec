@@ -618,9 +618,26 @@ c := webtest.New(t, app, "https://app.example") // in-process
 c.Get("/ready").WantStatus(http.StatusNoContent)
 ```
 
-Build the client inside the test that makes assertions; never share one
-across `t.Run` subtests. Assertions report to the `testing.TB` given when
-the client was built.
+To sign in once and use the same session in subtests, call `c.With(t)` with
+the subtest's `t`:
+
+```go
+c.SignIn("/login", url.Values{"password": {pw}})
+for _, path := range []string{"/items", "/items/new"} {
+	t.Run(path, func(t *testing.T) {
+		t.Parallel()
+		c.With(t).Get(path).WantStatus(http.StatusOK)
+	})
+}
+```
+
+The returned client and the responses, pages and forms it creates report
+assertions to the subtest. Call methods that can fail the test only from the
+goroutine running the test they are bound to. Parallel subtests can each use
+their own bound client if the shared handler and custom options are safe for
+concurrent requests. The cookie jar is shared, not copied: a cookie change in
+one subtest is visible to the others.
+See the [compiled subtest example](webtest/example_test.go).
 
 The client keeps cookies and sends its `Origin` on unsafe requests by default.
 Use `WithOrigin` to override the header without changing the request URL.
@@ -662,6 +679,8 @@ Sweep every protected route with its own method. `Run` fails on 2xx, 404, 405
 and 5xx whatever `Refused` says, and on fewer protected routes than `Min`.
 It returns the number of protected routes swept, not the number of requests.
 Routes marked `Public` must give a `Why`; they are logged and skipped.
+In a subtest, pass its `t` to `Run` and return fresh anonymous clients bound
+to that same `t` from the `Client` factory.
 Each `Cookies` entry is tried separately. `SetCookie` fails if the jar would
 not send that cookie to the base URL (for example, a Secure cookie on a
 non-loopback HTTP origin), so an unsendable variant cannot pass anonymously.
@@ -712,6 +731,8 @@ Use `HostileRedirects()` as inputs and assert a literal fallback Location.
 
 - **Unreleased**
   - `webtest` adds integration-test clients, assertions and probes.
+  - `(*webtest.Client).With(t)` binds assertions to a subtest while sharing the
+    original client's cookies and configuration.
 - **v0.4.0**
   - `csrf.ValidateOrigin` and `csrf.New` refuse Unicode hosts and noncanonical
     IPv4 and IPv6 spellings that browsers don't use in `Origin` headers.
