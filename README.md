@@ -741,7 +741,7 @@ Use `HostileRedirects()` as inputs and assert a literal fallback Location.
 
 ## Changes
 
-- **Unreleased** (v0.5.1)
+- **v0.5.1**
   - `webtest.NoSecrets` also fails when a secret appears with every byte
     percent-encoded (`%41%42…`, upper or lower-case digits), a form that
     `url.QueryEscape` and `url.PathEscape` do not produce.
