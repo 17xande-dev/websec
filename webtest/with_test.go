@@ -1,6 +1,7 @@
 package webtest
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,10 @@ func TestClientWithReportsToSubtest(t *testing.T) {
 		w.Header().Add("Location", "/first")
 		w.Header().Add("Location", "/second")
 		w.WriteHeader(http.StatusSeeOther)
+	})
+	mux.HandleFunc("/cookies", func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "first"})
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "second"})
 	})
 	for _, tt := range []struct {
 		name, wantMsg string
@@ -42,6 +47,18 @@ func TestClientWithReportsToSubtest(t *testing.T) {
 		}},
 		{"follow parent response", "multiple Location values", func(parent, sub *Client, _ testing.TB) {
 			sub.Follow(parent.Get("/redirect"))
+		}},
+		{"want cookie missing", `no Set-Cookie named "session"`, func(parent, _ *Client, tb testing.TB) {
+			WantCookie(tb, parent.Get("/form"), CookieWant{Name: "session"})
+		}},
+		{"want cookie duplicate", `multiple Set-Cookie values named "session"`, func(parent, _ *Client, tb testing.TB) {
+			WantCookie(tb, parent.Get("/cookies"), CookieWant{Name: "session"})
+		}},
+		{"set cookie", "jar would not send", func(_, sub *Client, _ testing.TB) {
+			sub.SetCookie(&http.Cookie{Name: "session", Value: "expired", MaxAge: -1})
+		}},
+		{"sign in", "found 0 password forms", func(_, sub *Client, _ testing.TB) {
+			sub.SignIn("/form", nil)
 		}},
 		{"sweep response", "want status 401", func(_, sub *Client, tb testing.TB) {
 			Sweep{
@@ -67,6 +84,45 @@ func TestClientWithReportsToSubtest(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSweepRunReportsToPassedTest(t *testing.T) {
+	for _, tt := range []struct {
+		name, method, tokenPage string
+		status                  int
+		wantMsg                 string
+	}{
+		{"token page", http.MethodPost, "/token", http.StatusUnauthorized, "GET /token: status 404"},
+		{"not a refusal", http.MethodGet, "", http.StatusOK, "not a refusal"},
+		{"refused error", http.MethodGet, "", http.StatusUnauthorized, "unexpected refusal"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := &failRecorder{TB: t}
+			mux := http.NewServeMux()
+			mux.HandleFunc("/protected", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+			})
+			checkFailure(t, func(sub testing.TB) {
+				Sweep{
+					Routes:    []Route{{Method: tt.method, Path: "/protected"}},
+					Min:       1,
+					Client:    func() *Client { return New(parent, mux, testOrigin) },
+					TokenPage: tt.tokenPage,
+					NoToken:   tt.tokenPage == "",
+					Refused:   func(Route, *Response) error { return errors.New("unexpected refusal") },
+				}.Run(sub)
+			}, true, tt.wantMsg)
+			if parent.Failed() {
+				t.Errorf("parent failed: %q", parent.messages)
+			}
+		})
+	}
+}
+
+func TestClientWithRejectsNil(t *testing.T) {
+	checkFailure(t, func(tb testing.TB) {
+		New(tb, http.NotFoundHandler(), testOrigin).With(nil)
+	}, true, "With: nil testing.TB")
 }
 
 func TestClientWithKeepsOriginalBinding(t *testing.T) {

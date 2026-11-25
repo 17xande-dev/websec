@@ -88,7 +88,7 @@ func Routes(t testing.TB, patterns []string, fill map[string]string) []Route {
 type Sweep struct {
 	Routes    []Route
 	Min       int                          // minimum number of protected routes
-	Client    func() *Client               // fresh anonymous client for each attempt
+	Client    func() *Client               // fresh anonymous client for each attempt; Run binds it to its t
 	TokenPage string                       // fetch a token for unsafe requests
 	NoToken   bool                         // explicitly skip token fetching, e.g. when session checks run first
 	Form      url.Values                   // extra fields for unsafe requests
@@ -160,10 +160,11 @@ func (s Sweep) Run(t testing.TB) int {
 func (s Sweep) attempt(t testing.TB, route Route, ck *http.Cookie) {
 	t.Helper()
 	label := fmt.Sprintf("route %q", route.name())
-	c := s.Client()
-	if c == nil {
+	client := s.Client()
+	if client == nil {
 		t.Fatalf("%s: Client returned nil", label)
 	}
+	c := client.With(t)
 	if ck != nil {
 		// Report the scenario without reporting the cookie value.
 		label += fmt.Sprintf(" with cookie %q", ck.Name)

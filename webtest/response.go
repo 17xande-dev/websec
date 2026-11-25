@@ -64,6 +64,11 @@ func (r *Response) WantRedirect(code int, location string) {
 // parsed Set-Cookie or more than one parsed Set-Cookie matches the name.
 func (r *Response) SetCookie(name string) *http.Cookie {
 	r.t.Helper()
+	return r.setCookie(r.t, name)
+}
+
+func (r *Response) setCookie(t testing.TB, name string) *http.Cookie {
+	t.Helper()
 	res := http.Response{Header: r.Header}
 	var found *http.Cookie
 	for _, ck := range res.Cookies() {
@@ -71,12 +76,12 @@ func (r *Response) SetCookie(name string) *http.Cookie {
 			continue
 		}
 		if found != nil {
-			r.t.Fatalf("%s: multiple Set-Cookie values named %q", r.summary(), name)
+			t.Fatalf("%s: multiple Set-Cookie values named %q", r.summary(), name)
 		}
 		found = ck
 	}
 	if found == nil {
-		r.t.Fatalf("%s: no Set-Cookie named %q", r.summary(), name)
+		t.Fatalf("%s: no Set-Cookie named %q", r.summary(), name)
 	}
 	return found
 }

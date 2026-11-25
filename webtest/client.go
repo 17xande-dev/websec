@@ -66,12 +66,17 @@ func newClient(t testing.TB, origin string, transport http.RoundTripper, opts []
 
 // With returns a client bound to t for assertions and contexts on requests it
 // creates. It shares c's cookie jar, transport, origin and default options
-// without changing c's test binding.
+// without changing the test binding of c or its existing responses, pages and
+// forms. With fails the test bound to c if t is nil.
 //
 // Parallel subtests can each call With and use their own bound client, provided
 // any shared handler and custom options support concurrent requests. Cookie
 // changes are visible to all clients sharing the jar.
 func (c *Client) With(t testing.TB) *Client {
+	if t == nil {
+		c.t.Helper()
+		c.t.Fatal("With: nil testing.TB")
+	}
 	out := *c
 	out.t = t
 	return &out

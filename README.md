@@ -632,7 +632,9 @@ for _, path := range []string{"/items", "/items/new"} {
 ```
 
 The returned client and the responses, pages and forms it creates report
-assertions to the subtest. Call methods that can fail the test only from the
+assertions to the subtest. Assertion methods on responses, pages and forms
+from the original client still report to the original test; fetch them again
+through the bound client. Call methods that can fail the test only from the
 goroutine running the test they are bound to. Parallel subtests can each use
 their own bound client if the shared handler and custom options are safe for
 concurrent requests. The cookie jar is shared, not copied: a cookie change in
@@ -679,8 +681,8 @@ Sweep every protected route with its own method. `Run` fails on 2xx, 404, 405
 and 5xx whatever `Refused` says, and on fewer protected routes than `Min`.
 It returns the number of protected routes swept, not the number of requests.
 Routes marked `Public` must give a `Why`; they are logged and skipped.
-In a subtest, pass its `t` to `Run` and return fresh anonymous clients bound
-to that same `t` from the `Client` factory.
+In a subtest, pass its `t` to `Run`. The `Client` factory returns fresh
+anonymous clients, and `Run` binds each one to the supplied `t`.
 Each `Cookies` entry is tried separately. `SetCookie` fails if the jar would
 not send that cookie to the base URL (for example, a Secure cookie on a
 non-loopback HTTP origin), so an unsendable variant cannot pass anonymously.

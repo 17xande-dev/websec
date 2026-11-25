@@ -23,7 +23,7 @@ type CookieWant struct {
 // __Host- and __Secure- prefix rules independently of the expected fields.
 func WantCookie(t testing.TB, r *Response, want CookieWant) *http.Cookie {
 	t.Helper()
-	ck := r.SetCookie(want.Name)
+	ck := r.setCookie(t, want.Name)
 
 	// A parsed empty string or zero duration can mean either absent or
 	// malformed. Check wire attribute presence when the rule requires absence.
