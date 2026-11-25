@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"html"
 	"log/slog"
 	"net/url"
@@ -51,7 +52,8 @@ func (l *Logs) Reset() {
 
 // NoSecrets requires a nonempty mustContain marker in text and checks all of
 // text for each secret: raw, URL query and path escapes, JSON and HTML escapes,
-// standard and URL base64, and hex. Each secret must be at least 12 bytes to
+// standard and URL base64, hex, and every byte percent-encoded (upper and
+// lower-case digits). Each secret must be at least 12 bytes to
 // avoid chance matches against random IDs. Failures do not print the secrets
 // or captured log.
 func NoSecrets(t testing.TB, text, mustContain string, secrets ...string) {
@@ -80,6 +82,14 @@ func secretForms(secret string) []struct{ name, value string } {
 	_ = encoder.Encode(secret)
 	jsonValue := strings.TrimSuffix(jsonLog.String(), "\n")
 	hexValue := hex.EncodeToString(raw)
+	// url.QueryEscape and url.PathEscape leave unreserved bytes alone, so a
+	// value with every byte escaped is a different string that decodes to the
+	// same secret.
+	var percentUpper, percentLower strings.Builder
+	for _, b := range raw {
+		fmt.Fprintf(&percentUpper, "%%%02X", b)
+		fmt.Fprintf(&percentLower, "%%%02x", b)
+	}
 	return []struct{ name, value string }{
 		{"raw", secret},
 		{"query escaped", url.QueryEscape(secret)},
@@ -92,6 +102,8 @@ func secretForms(secret string) []struct{ name, value string } {
 		{"base64 URL", base64.URLEncoding.EncodeToString(raw)},
 		{"base64 raw URL", base64.RawURLEncoding.EncodeToString(raw)},
 		{"hex", hexValue},
+		{"all bytes percent-encoded", percentUpper.String()},
+		{"all bytes lowercase percent-encoded", percentLower.String()},
 		{"uppercase hex", strings.ToUpper(hexValue)},
 	}
 }
