@@ -712,6 +712,7 @@ Use `HostileRedirects()` as inputs and assert a literal fallback Location.
 
 - **Unreleased**
   - `webtest` adds integration-test clients, assertions and probes.
+- **v0.4.0**
   - `csrf.ValidateOrigin` and `csrf.New` refuse Unicode hosts and noncanonical
     IPv4 and IPv6 spellings that browsers don't use in `Origin` headers.
     Upgrading: an `Origin` written in one of those spellings (for example
