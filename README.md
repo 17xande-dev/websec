@@ -731,7 +731,7 @@ Use `HostileRedirects()` as inputs and assert a literal fallback Location.
 
 ## Changes
 
-- **Unreleased**
+- **v0.5.0**
   - `webtest` adds integration-test clients, assertions and probes.
   - `(*webtest.Client).With(t)` binds assertions to a subtest while sharing the
     original client's cookies and configuration.
