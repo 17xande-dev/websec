@@ -72,3 +72,23 @@ func TestUploadRefusalExample(t *testing.T) {
 	}
 	webtest.NoSecrets(t, logs.String(), "upload refused", secret)
 }
+
+func TestCookieAtExample(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /admin/login", func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{
+			Name: "admin_session", Value: "token", Path: "/admin", Secure: true, HttpOnly: true,
+		})
+		w.WriteHeader(http.StatusNoContent)
+	})
+	c := webtest.New(t, mux, "https://app.example")
+	c.Do(c.NewRequest(http.MethodPost, "/admin/login", nil)).WantStatus(http.StatusNoContent)
+
+	// Cookie asks for the base URL, so it cannot see a cookie scoped to /admin.
+	if _, ok := c.Cookie("admin_session"); ok {
+		t.Error("admin cookie is visible at /")
+	}
+	if _, ok := c.CookieAt("/admin/users", "admin_session"); !ok {
+		t.Error("admin cookie is not sent to /admin/users")
+	}
+}

@@ -652,6 +652,16 @@ cookies to non-loopback HTTP origins; it may still send them to an HTTP
 loopback server. The jar does not enforce cookie prefixes, so use `WantCookie`
 to check them.
 
+`Cookie(name)` reads the cookies the jar would send to the base URL (path `/`),
+so a cookie with `Path=/admin` is invisible to it. `CookieAt(path, name)` asks
+the jar for that path instead: `CookieAt("/admin", n)` and `CookieAt("/admin/x", n)`
+find an `/admin` cookie, `CookieAt("/", n)` does not, a root cookie is found at
+every path, and an empty path means `/`. A path without a leading `/` fails the
+test. It mirrors what a browser would send: with the same name stored at several
+matching paths it returns the value listed first, the most specific path's, and
+a Secure cookie is not returned on an HTTP origin.
+See the [compiled example](webtest/example_test.go).
+
 The client neither follows redirects nor parses `Location` automatically.
 `Follow` explicitly follows a parseable same-origin 3xx `Location` with a GET;
 to check another target, assert on `Location` or use `WantRedirect` instead.
@@ -734,7 +744,10 @@ Use `HostileRedirects()` as inputs and assert a literal fallback Location.
 - **Unreleased** (v0.5.1)
   - `webtest.NoSecrets` also fails when a secret appears with every byte
     percent-encoded (`%41%42…`, upper or lower-case digits), a form that
-    `url.QueryEscape` and `url.PathEscape` do not produce. No API change.
+    `url.QueryEscape` and `url.PathEscape` do not produce.
+  - `(*webtest.Client).CookieAt(path, name)` returns a cookie the jar would
+    send to `path`, so a cookie scoped to a sub-path such as `/admin` can be
+    read. `Cookie(name)` is unchanged and still reads path `/`.
 - **v0.5.0**
   - `webtest` adds integration-test clients, assertions and probes.
   - `(*webtest.Client).With(t)` binds assertions to a subtest while sharing the

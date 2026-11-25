@@ -191,9 +191,35 @@ func (c *Client) SetCookie(ck *http.Cookie) {
 }
 
 // Cookie returns the named cookie's value, if the jar would send it to the
-// client's base URL.
+// client's base URL (path "/"). A cookie scoped to a sub-path is not visible
+// here; use CookieAt for it.
 func (c *Client) Cookie(name string) (value string, ok bool) {
-	for _, ck := range c.jar.Cookies(c.base) {
+	return c.CookieAt("/", name)
+}
+
+// CookieAt returns the named cookie's value, if the jar would send it with a
+// request to path on the client's origin. Use it for a cookie whose Path
+// attribute is a sub-path: a cookie with Path=/admin is returned for "/admin"
+// and "/admin/x" but not for "/". A cookie with Path=/ is returned for every
+// path, and an empty path means "/". The path must start with "/" or the
+// test fails; it is a literal path, not a URL, so "?" and "#" are not
+// treated as a query or fragment.
+//
+// It mirrors what a browser would send, as the jar does. If the same name is
+// stored at more than one matching path, the value returned is the one the jar
+// lists first, which is the longest (most specific) path. Secure cookies are
+// not returned on an HTTP origin, as for Cookie.
+func (c *Client) CookieAt(path, name string) (value string, ok bool) {
+	c.t.Helper()
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		c.t.Fatalf("CookieAt %q: path %q must start with %q", name, path, "/")
+	}
+	u := *c.base
+	u.Path = path
+	for _, ck := range c.jar.Cookies(&u) {
 		if ck.Name == name {
 			return ck.Value, true
 		}
