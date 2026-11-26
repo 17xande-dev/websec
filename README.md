@@ -804,3 +804,7 @@ Use `HostileRedirects()` as inputs and assert a literal fallback Location.
 make fmt-check vet test vulncheck
 make fuzz   # FuzzSafeRedirect for 60 seconds
 ```
+
+## License
+
+This module is licensed under the [MIT No Attribution license](LICENSE).
